@@ -219,8 +219,26 @@ int main() {
         }
     }
 
+    // --- the key, and the identity derived from it ------------------------------------------------
+    // Minted before registration, because the agent's machine id IS derived from this key. The agent
+    // does not pick a name and have a key attached; it has a key, and that is what it is known by.
+    const std::string minted = rw::generate_token();
+    std::vector<uint8_t> token;
+    if (!rw::parse_token(minted.substr(4), &token)) {
+        std::cerr << "FAIL: the generated key did not parse back\n";
+        return 1;
+    }
+    const std::string machineId = rw::machine_id(token);
+    const std::string machineLabel = "DESKTOP-TEST";
+    check(token.size() == rw::kTokenBytes,
+          "a minted key carries " + std::to_string(rw::kTokenBytes) + " bytes");
+    check(machineId.size() == 16, "and the machine is known by the id derived from it: " + machineId);
+    check(minted.find(machineId) == std::string::npos,
+          "the id is derived, not the key itself, so an id seen on the wire is not a credential");
+
     // --- registration ------------------------------------------------------------------------
-    agent.send(make(rw::AgentHello{"agent-test-1", static_cast<uint8_t>(rw::AgentOs::Windows),
+    agent.send(make(rw::AgentHello{machineId, machineLabel,
+                                   static_cast<uint8_t>(rw::AgentOs::Windows),
                                    rw::kCapInteractive | rw::kCapLocked, 3840, 2160,
                                    rw::kEncH264Hw | rw::kEncH264Sw}));
     relay.run_once(0);
@@ -229,7 +247,8 @@ int main() {
         // A copy, not a reference: endpoints() returns a vector by value, and front() hands back a
         // reference into that temporary, which is destroyed at the end of the statement.
         const auto ep = relay.endpoints().front();
-        check(ep.agentId == "agent-test-1", "endpoint id recorded: " + ep.agentId);
+        check(ep.machineId == machineId, "registered under the id derived from its key: " + ep.machineId);
+        check(ep.label == machineLabel, "and carries its label separately: " + ep.label);
         check((ep.capabilities & rw::kCapLocked) != 0,
               "locked-capture capability is carried through, not assumed by the controller");
         check(ep.maxWidth == 3840 && ep.maxHeight == 2160,
@@ -238,7 +257,7 @@ int main() {
     }
 
     // --- opening a session against an endpoint that is not there ------------------------------
-    controller.send(make(rw::OpenSession{"agent-that-does-not-exist", 1280, 720,
+    controller.send(make(rw::OpenSession{"ffffffffffffffff", 1280, 720,
                                          static_cast<uint8_t>(rw::Quality::Medium), /*credential=*/{}}));
     auto notFound = controller.await(relay, rw::Type::Error);
     check(notFound.has_value(), "OPEN_SESSION for an unknown endpoint gets an Error");
@@ -249,26 +268,18 @@ int main() {
     }
 
     // --- a real session ----------------------------------------------------------------------
-    // Mint a token the way an agent does, and present it. The relay must not read it.
-    const std::string minted = rw::generate_token();
-    std::vector<uint8_t> token;
-    if (!rw::parse_token(minted.substr(4), &token)) {
-        std::cerr << "FAIL: the generated token did not parse back\n";
-        return 1;
-    }
-    check(token.size() == rw::kTokenBytes, "a minted token carries " + std::to_string(rw::kTokenBytes)
-                                              + " bytes, fingerprint "
-                                              + rw::token_fingerprint(token));
+    // The key was minted before registration, and the machine id derived from it; the controller
+    // addresses the machine by that id and presents the key. The relay must not read either.
     AgentBehaviour agentMind({token});
 
-    controller.send(make(rw::OpenSession{"agent-test-1", 1920, 1080,
+    controller.send(make(rw::OpenSession{machineId, 1920, 1080,
                                          static_cast<uint8_t>(rw::Quality::High), token}));
     // service() drains the agent's queue and answers, so the request is returned rather than awaited
     // separately -- awaiting it first would leave nothing for the agent to reply to.
     auto agentSawOpen = agentMind.service(relay, agent, "s-0000-0001");
     check(agentSawOpen.has_value(), "OPEN_SESSION reached the agent, which answered it");
     if (agentSawOpen) {
-        check(agentSawOpen->agentId == "agent-test-1" && agentSawOpen->width == 1920
+        check(agentSawOpen->machineId == machineId && agentSawOpen->width == 1920
                   && agentSawOpen->height == 1080,
               "the forwarded OpenSession kept its fields");
         check(agentSawOpen->credential == token,
@@ -279,9 +290,9 @@ int main() {
     auto session = relay.sessionById("s-0000-0001");
     check(session.has_value(), "relay has the session bound");
     if (session) {
-        check(session->agentId == "agent-test-1", "session names the endpoint");
-        check(relay.sessionForAgent("agent-test-1").has_value(),
-              "session is findable by endpoint id");
+        check(session->machineId == machineId, "session names the machine by its derived id");
+        check(relay.sessionForMachine(machineId).has_value(),
+              "session is findable by machine id");
     }
 
     // A second controller must be refused while the agent is busy.
@@ -292,7 +303,7 @@ int main() {
         second.send(make(rw::Hello{rw::kVersionMin, rw::kVersionMax,
                                     static_cast<uint8_t>(rw::Role::Controller), "controller-2"}));
         second.await(relay, rw::Type::HelloAck);
-        second.send(make(rw::OpenSession{"agent-test-1", 800, 600,
+        second.send(make(rw::OpenSession{machineId, 800, 600,
                                          static_cast<uint8_t>(rw::Quality::Low), token}));
         check(agentMind.service(relay, agent, "s-0000-0002").has_value(), "the agent answered");
         auto busy = second.await(relay, rw::Type::Error);
@@ -402,7 +413,7 @@ int main() {
         probe.await(relay, rw::Type::HelloAck);
 
         // (a) an agent that exists, with a token it will not accept
-        probe.send(make(rw::OpenSession{"agent-test-1", 640, 480,
+        probe.send(make(rw::OpenSession{machineId, 640, 480,
                                         static_cast<uint8_t>(rw::Quality::Low), wrongToken}));
         check(agentMind.service(relay, agent, "s-0000-0003").has_value(), "the agent answered");
         auto rejected = probe.await(relay, rw::Type::Error);
@@ -413,7 +424,7 @@ int main() {
                   + ")");
 
         // (b) an agent that does not exist at all
-        probe.send(make(rw::OpenSession{"agent-not-here", 640, 480,
+        probe.send(make(rw::OpenSession{"ffffffffffffffff", 640, 480,
                                         static_cast<uint8_t>(rw::Quality::Low), wrongToken}));
         auto absent = probe.await(relay, rw::Type::Error);
         uint16_t absentCode = absent ? std::get<rw::ErrorMsg>(absent->message.body).code : 0;
@@ -422,7 +433,7 @@ int main() {
                   + std::to_string(absentCode) + ", so there is no enumeration oracle");
 
         // (c) no credential at all is refused the same way, not treated as a legacy request
-        probe.send(make(rw::OpenSession{"agent-test-1", 640, 480,
+        probe.send(make(rw::OpenSession{machineId, 640, 480,
                                         static_cast<uint8_t>(rw::Quality::Low), /*credential=*/{}}));
         check(agentMind.service(relay, agent, "s-0000-0004").has_value(), "the agent answered");
         auto empty = probe.await(relay, rw::Type::Error);
@@ -444,12 +455,51 @@ int main() {
                                       static_cast<uint8_t>(rw::Role::Controller), "not-paired"}));
         check(stranger.await(relay, rw::Type::HelloAck).has_value(),
               "the relay still pairs a caller with no credential (it holds none to check)");
-        stranger.send(make(rw::OpenSession{"agent-test-1", 640, 480,
+        stranger.send(make(rw::OpenSession{machineId, 640, 480,
                                            static_cast<uint8_t>(rw::Quality::Low), /*credential=*/{}}));
         check(agentMind.service(relay, agent, "s-0000-0005").has_value(), "the agent answered");
         auto err = stranger.await(relay, rw::Type::Error);
         check(err.has_value(),
               "... but the agent refuses to serve it, and the relay cannot overrule that");
+    }
+
+    // --- two machines that pick the same id must be refused, not silently merged ----------------
+    // The machine id is derived from the endpoint's key, so a collision is already astronomically
+    // unlikely. This is the backstop: a collision must deny a machine rather than let the registry
+    // overwrite the first entry, so find_agent() cannot hand the controller whichever connected
+    // first. Note the twin announces the same id with a *different* key -- which is the whole point,
+    // because the key is what makes the identity unforgeable.
+    {
+        auto twinSocket = rw::SocketStream::connect_loopback(port);
+        relay.run_once(0);
+        Peer twin(std::move(*twinSocket));
+        twin.send(make(rw::Hello{rw::kVersionMin, rw::kVersionMax,
+                                 static_cast<uint8_t>(rw::Role::Agent), "twin"}));
+        twin.await(relay, rw::Type::HelloAck);
+        twin.send(make(rw::AgentHello{machineId, machineLabel, static_cast<uint8_t>(rw::AgentOs::Linux),
+                                       rw::kCapInteractive, 1920, 1080, rw::kEncH264Hw}));
+        auto clash = twin.await(relay, rw::Type::Error);
+        check(clash.has_value(), "a second agent claiming a live machine id is refused");
+        if (clash) {
+            check(std::get<rw::ErrorMsg>(clash->message.body).code
+                      == static_cast<uint16_t>(rw::ErrorCode::DuplicateEndpoint),
+                  "with code DuplicateEndpoint, which names the cause instead of guessing");
+        }
+
+        // The original must still be the one that answers: the refusal has to leave the registry
+        // alone, not evict the machine that was there first.
+        controller.send(make(rw::OpenSession{machineId, 640, 480,
+                                             static_cast<uint8_t>(rw::Quality::Low), token}));
+        auto served = agentMind.service(relay, agent, "s-0000-0006");
+        check(served.has_value(), "the first agent still answers for that id");
+        controller.await(relay, rw::Type::SessionOpened);
+        relay.run_once(0);
+        check(relay.sessionById("s-0000-0006").has_value(),
+              "and the session bound to it, so the refused twin did not take over");
+        agentMind.unbind();
+        controller.send(make(rw::CloseSession{static_cast<uint16_t>(rw::CloseReason::Client)}));
+        relay.run_once(0);
+        agent.await(relay, rw::Type::Error);
     }
 
     relay.stop();

@@ -54,6 +54,30 @@ def die(msg):
 # The id group allows dashes so a `bundle-` prefix matches.
 ALLOWED_JAR = re.compile(r"^[A-Za-z0-9_-]+-[0-9][0-9.]*-(fabric|neoforge|universal)\.jar$")
 
+# The endpoint agent: the one thing that runs on a watched machine. Its version is the same stamped
+# version as the mod, and the platform is named rather than implied, because a download page has to
+# be able to tell a Windows user which file to take.
+#
+# Built and shipped by this script, not by CI. CI's publish mode downloads the jars off the GitHub
+# release to hand to mc-publish, and CurseForge/Modrinth only ever want the jar; a release started
+# from the Actions tab therefore ships no binary, which is a property of that path rather than a
+# defect. Releasing from here is the supported way to ship one.
+ALLOWED_BINARY = re.compile(
+    r"^remote-worker-[0-9][0-9.]*-[a-z0-9]+-(x86_64|arm64)(\.exe)?$")
+
+# The files in a release directory that are not jars. Deliberately a shape test rather than a
+# match against ALLOWED_BINARY: the point of the check is to catch a stray file as well as a
+# missing one, and filtering by the allowed shape would quietly ignore exactly the wrong name.
+# .gitkeep and changelog.md are the directory's own bookkeeping, not release content.
+def non_jar_files(directory):
+    return sorted(
+        p for p in Path(directory).iterdir()
+        if p.is_file()
+        and not p.name.endswith(".jar")
+        and not p.name.startswith(".")
+        and p.name != "changelog.md"
+    )
+
 
 # --- process helpers ----------------------------------------------------------------
 
@@ -254,6 +278,16 @@ def collect(mc, dry):
             die(f"no jars in {release}; did the build run?")
         for jar in jars:
             shutil.copy2(jar, DIST)
+        # The binary is required, not optional. A release with no agent in it looks exactly like a
+        # successful release -- the jar count is right, the build was green -- and the omission is
+        # only visible to someone who then cannot find the file to install. So it is checked here
+        # rather than discovered on a download page.
+        binaries = non_jar_files(release)
+        if not binaries:
+            die(f"no agent binary in {release}; did the C++ build run? "
+                f"(expected something like remote-worker-<version>-windows-x86_64.exe)")
+        for binary in binaries:
+            shutil.copy2(binary, DIST)
     verify(mc, dry)
 
 
@@ -270,7 +304,13 @@ def verify(mc, dry):
     bad = [j for j in jars if not ALLOWED_JAR.match(j)]
     if bad:
         die(f"unexpected files in dist/ (not <id>-<version>-<loader>.jar): {bad}")
-    log(f"release jar set OK ({len(jars)} files)")
+    binaries = [p.name for p in non_jar_files(DIST)]
+    if len(binaries) != 1:
+        die(f"expected exactly 1 agent binary in dist/, found {len(binaries)}: {binaries}")
+    if not ALLOWED_BINARY.match(binaries[0]):
+        die(f"unexpected agent binary name (want remote-worker-<version>-<os>-<arch>[.exe]): "
+            f"{binaries[0]}")
+    log(f"release set OK ({len(jars)} jars + {binaries[0]})")
 
 
 def changelog(tag, dry):
@@ -412,18 +452,22 @@ def github_release(token, tag, target, body, dry):
 
 
 def upload_assets(token, release_id, dry):
-    jars = sorted(DIST.glob("*.jar"))
-    for jar in jars:
+    assets = sorted(list(DIST.glob("*.jar")) + non_jar_files(DIST))
+    for asset in assets:
         if dry:
-            print(f"  [dry-run] upload {jar.name}")
+            print(f"  [dry-run] upload {asset.name}")
             continue
-        url = f"https://uploads.github.com/repos/{repo_slug()}/releases/{release_id}/assets?name={jar.name}"
-        req = urllib.request.Request(url, data=jar.read_bytes(), method="POST")
+        url = f"https://uploads.github.com/repos/{repo_slug()}/releases/{release_id}/assets?name={asset.name}"
+        req = urllib.request.Request(url, data=asset.read_bytes(), method="POST")
         req.add_header("Authorization", f"token {token}")
-        req.add_header("Content-Type", "application/java-archive")
+        # Per asset: a jar is a jar, and an executable is not. Sending the wrong type does not fail
+        # the upload, it just makes the release page describe the file wrongly.
+        content_type = ("application/java-archive" if asset.name.endswith(".jar")
+                        else "application/vnd.microsoft.portable-executable")
+        req.add_header("Content-Type", content_type)
         req.add_header("User-Agent", UA)
         with urllib.request.urlopen(req, timeout=600) as resp:
-            log(f"uploaded {jar.name} ({resp.status})")
+            log(f"uploaded {asset.name} ({resp.status})")
 
 
 def dispatch_publish_ci(token, tag, mc, dry):

@@ -165,19 +165,19 @@ size_t Relay::index_of(const Connection& target) const {
     return connections_.size();
 }
 
-Relay::Connection* Relay::find_agent(const std::string& agentId) {
+Relay::Connection* Relay::find_agent(const std::string& machineId) {
     for (auto& c : connections_) {
-        if (c->role == Role::Agent && c->instanceId == agentId) {
+        if (c->role == Role::Agent && c->instanceId == machineId) {
             return c.get();
         }
     }
     return nullptr;
 }
 
-Relay::Connection* Relay::find_pending_controller(const std::string& agentId) {
+Relay::Connection* Relay::find_pending_controller(const std::string& machineId) {
     for (auto& candidate : connections_) {
         if (candidate->role == Role::Controller && candidate->pending.has_value()
-            && candidate->pending->agentId == agentId) {
+            && candidate->pending->machineId == machineId) {
             return candidate.get();
         }
     }
@@ -238,11 +238,28 @@ void Relay::handle(Connection& c, ReceivedFrame& frame) {
                 return;
             }
             const auto& hello = std::get<AgentHello>(m.body);
-            c.instanceId = hello.agentId;
-            endpoints_[hello.agentId] =
-                EndpointInfo{hello.agentId, hello.os, hello.capabilities, hello.maxWidth,
-                             hello.maxHeight, hello.encoders};
-            log("endpoint " + hello.agentId + " registered, capture caps " + hex16(hello.capabilities));
+            // The machine id is derived from the endpoint's key, so a collision is already
+            // astronomically unlikely. This is the backstop, not the mechanism: a collision must
+            // deny a machine rather than let the registry overwrite the first entry and have
+            // find_agent() hand the controller whichever connected first.
+            for (const auto& other : connections_) {
+                if (other.get() == &c || other->role != Role::Agent) {
+                    continue;
+                }
+                if (other->instanceId == hello.machineId) {
+                    send_error(c, ErrorCode::DuplicateEndpoint,
+                               "machine id " + hello.machineId
+                                   + " is already connected from another endpoint");
+                    return;
+                }
+            }
+            c.instanceId = hello.machineId;
+            c.label = hello.label;
+            endpoints_[hello.machineId] =
+                EndpointInfo{hello.machineId, hello.label, hello.os, hello.capabilities,
+                             hello.maxWidth, hello.maxHeight, hello.encoders};
+            log("endpoint " + hello.label + " (" + hello.machineId + ") registered, capture caps "
+                + hex16(hello.capabilities));
             return;
         }
 
@@ -252,9 +269,9 @@ void Relay::handle(Connection& c, ReceivedFrame& frame) {
                 return;
             }
             const auto& open = std::get<OpenSession>(m.body);
-            Connection* agent = find_agent(open.agentId);
+            Connection* agent = find_agent(open.machineId);
             if (agent == nullptr) {
-                send_error(c, ErrorCode::NotFound, "no endpoint called " + open.agentId);
+                send_error(c, ErrorCode::NotFound, "no endpoint " + open.machineId);
                 return;
             }
             // Note what is NOT checked here: whether the agent is already serving a session. The
@@ -269,7 +286,7 @@ void Relay::handle(Connection& c, ReceivedFrame& frame) {
             c.pending = open;
             agent->channel->write_raw(frame.raw);
             forwardedMessages_++;
-            log("controller " + c.instanceId + " asked for " + open.agentId + " at "
+            log("controller " + c.instanceId + " asked for " + open.machineId + " at "
                 + std::to_string(open.width) + "x" + std::to_string(open.height)
                 + (open.credential.empty() ? " with no credential" : ""));
             return;
@@ -327,7 +344,7 @@ void Relay::handle(Connection& c, ReceivedFrame& frame) {
                     // Read what was asked for before clearing it: the message the controller gets
                     // must not be able to tell it apart from a request for a name that is not there.
                     const std::string requested =
-                        controller->pending ? controller->pending->agentId : c.instanceId;
+                        controller->pending ? controller->pending->machineId : c.instanceId;
                     controller->pending.reset();
                     if (err.code == static_cast<uint16_t>(ErrorCode::AuthFailed)) {
                         // Report "no such endpoint", not "your token was wrong". Otherwise the relay
@@ -335,8 +352,7 @@ void Relay::handle(Connection& c, ReceivedFrame& frame) {
                         // agent that exists but refused it from one that is not there at all, and
                         // walk a list of guessed machine names. Collapsing the two is the whole
                         // point of the check living here rather than in the agent's reply.
-                        send_error(*controller, ErrorCode::NotFound,
-                                   "no endpoint called " + requested);
+                        send_error(*controller, ErrorCode::NotFound, "no endpoint " + requested);
                         forwardedMessages_++;
                         return;
                     }
@@ -441,9 +457,9 @@ std::vector<EndpointInfo> Relay::endpoints() const {
     return out;
 }
 
-std::optional<SessionInfo> Relay::sessionForAgent(const std::string& agentId) const {
+std::optional<SessionInfo> Relay::sessionForMachine(const std::string& machineId) const {
     for (const auto& entry : sessions_) {
-        if (entry.second.info.agentId == agentId) {
+        if (entry.second.info.machineId == machineId) {
             return entry.second.info;
         }
     }

@@ -119,65 +119,160 @@ see the traffic. Accepted: this is a LAN-only, client-only mod on a network the 
 `rw::ByteStream` is the seam where a `TlsStream` would go, and the design is kept in the two
 layers below, in the order they would be worth doing.
 
-### Endpoint credentials: a key the agent mints
+### The key is the machine's identity
 
-**The agent generates the token, and the agent is the only thing that checks it.** That is the
-whole design, and it is why:
+**The machine id is derived from the key, and the key is the only secret.** The agent has no name of
+its own; it has a key, and `machine_id(key)` (16 hex characters) is what peers address it by. A
+separate `label` rides along for display only — it may repeat between endpoints, and nothing looks a
+machine up by it.
 
-- **The relay holds no key.** It forwards the credential without reading it. A compromised relay
-  cannot mint one for itself, and cannot tell a valid controller from an invalid one.
-- **Revocation is per endpoint.** Rotating one agent's token invalidates only that agent. A single
-  shared relay-wide secret would have to be rotated everywhere at once.
-- **The user can mint and revoke at will.** The agent's own CLI, in M4.
+The identity has to be *derived* rather than equal to the key, and that is the whole reason a hash is
+involved: the id is **public** (it travels in `AGENT_HELLO` and in every `OPEN_SESSION`) while the
+key is **secret**. If they were the same bytes, anyone who read a machine id off the wire could
+present it as that machine's credential.
 
-The flow, all of it in existing messages:
+The consequence worth stating plainly: **regenerating a key produces a new identity.** Peers see a
+new machine. That is correct rather than unfortunate — after a rotation nothing can prove the machine
+is the same one, so claiming otherwise would be a lie. The old pairing stops working, which is what
+rotation is for.
 
-1. The agent mints a token at install: 20 bytes from the OS CSPRNG, formatted `rw1_` plus 32
-   Crockford base32 characters. It is shown **once**. The agent keeps it; the user pastes it into the
-   mod, which stores it in the OS keychain.
-2. The mod sends `OPEN_SESSION` with that token in its `credential` field.
-3. The relay finds the named agent and forwards the request verbatim, credential and all.
-4. The agent compares the token in constant time.
-   - mismatch, or absent → the agent replies `ERROR` / `AuthFailed`
+### Why the key is random, and not derived from the machine
+
+A key derived from a MAC address, an IP address, a hostname, or any other machine property was
+considered and rejected, because each of those is *public* and therefore not a key at all:
+
+- **A MAC address is in every frame on the LAN.** A credential computed from one is readable by
+  anything that can see the traffic, with no privilege required. So is an IPv4 address, via ARP,
+  DHCP, the packet headers, and the router's own admin page.
+- **MAC addresses are forgeable.** Arbitrary Ethernet frames can carry any source address, so even a
+  "unique" one is not proof of which machine is on the other end.
+- **It would make keys *duplicable*, which is the opposite of the goal.** A cloned VM disk image
+  carries the same MAC, so two machines would share a key — a collision that authenticates both. DHCP
+  hands the same machine a different address tomorrow, a machine with Wi-Fi and Ethernet has two,
+  and IPv6 privacy addresses rotate by design. Each of those would unpair a machine that never
+  changed.
+- **It does not survive what the user actually asked for.** Regenerating a key on demand has to work
+  without invalidating the machine's identity by accident, and a property-derived key cannot offer
+  that.
+
+Randomness from the OS CSPRNG is what makes the guarantee real: 160 bits puts the chance of two
+machines colliding at about 3e-14 across a billion machines, and regeneration is unconditional. The
+way to *also* stop a key being copied to another machine is a hardware secret — a TPM or a Secure
+Enclave, which never releases the key — and that is a genuine dependency on optional hardware, so it
+is a later item rather than this one.
+
+The relay keeps a `DuplicateEndpoint` guard as a backstop. It is not the mechanism: the id is
+already unique by construction. It was a guard in the relay's endpoint registry, which is gone with
+the relay, and it stays in the error enum because an id that somehow did collide must be *denied*
+rather than silently accepted as the same machine.
+
+**The agent generates the key, and the agent is the only thing that checks it.** The consequences
+worth stating, because each is a property that came from the design rather than being bolted on:
+
+- **There is no middleman holding a key.** With the relay gone, no other process ever sees a
+  credential it could reuse.
+- **Revocation is per machine.** Rotating one agent's key invalidates only that agent, and only
+  costs that machine its pairings. A single shared secret would have to be rotated everywhere at
+  once, which is a much worse answer to "this one machine is compromised".
+- **The user can mint and revoke at will**, from the agent's own CLI: `remote-worker keygen` and
+  `remote-worker keygen --rotate`.
+
+### There is no relay
+
+A controller holds a list of endpoints -- each an address plus the key for that machine -- and
+connects to each one directly. The agent is the only program that runs on a watched machine, and
+there is nothing in the middle for it to talk to.
+
+The relay that used to sit between them still exists in the tree and is still tested, because deleting
+it is a separate change from removing it from the product. Nothing ships it.
+
+The visible consequence is that the **agent's id is not negotiated**: the controller has to be told
+it, and `remote-worker keygen` prints it next to the key for exactly that reason. A controller that
+asks for the wrong id is told so, with both ids in the message, rather than being redirected.
+
+### The flow, all of it in existing messages:
+
+1. `remote-worker keygen` mints a key on the machine being watched: 20 bytes from the OS CSPRNG,
+   formatted `rw1_` plus 32 Crockford base32 characters. It is shown **once**, together with the
+   `machine_id` derived from it, and written to the agent's key file. The mod holds the same key and
+   stores it in the OS keychain.
+2. The user configures the endpoint in the mod: the machine's address, plus that machine id and key.
+3. The mod connects to `host:port`, sends `HELLO` as a controller, and gets `HELLO_ACK` — which
+   names the machine that was actually reached, taken from its own key rather than from anything the
+   controller claimed, so a misconfigured address is visible in the log of the machine that was
+   actually contacted.
+4. The mod sends `OPEN_SESSION` naming that `machine_id` and carrying the key in its `credential`
+   field.
+5. The agent compares the key in constant time.
+   - wrong `machine_id`, or a key that does not match, or no key at all → `ERROR` / `AuthFailed`
    - match, but already serving → `ERROR` / `AgentBusy`
    - match → `SESSION_OPENED`, and the agent starts capturing
-5. **The relay rewrites `AuthFailed` to `NotFound` before the controller sees it.** See below.
+6. The connection stays up for the session, carrying `FRAME` messages one way and `INPUT_BATCH` the
+   other, and is closed by `CLOSE_SESSION` or by dropping the socket.
+
+`AGENT_HELLO` and `AGENT_HEARTBEAT` exist in the format for an agent that announces itself to a
+registry. With no relay there is no registry, so nothing sends them yet; they stay in the type
+registry because removing a message type changes the wire format and the vectors, and a type that is
+defined but unused is not a cost worth paying for.
+
+The id routes; the key authorises. They are the same object, which is why the id cannot be forged:
+a controller that knows a machine's id still cannot reach it without the key, and a controller that
+has the key for one machine cannot present another machine's id and be served, because the agent
+compares against its own stored key and nothing else.
 
 An empty `credential` is a rejected credential, not a legacy request. There is no version of the
 protocol without one.
 
-### Why the relay rewrites the error code
+### Why a wrong key and a wrong machine id are both `AuthFailed`
 
-If `AuthFailed` reached the controller, the relay would be an **enumeration oracle**: a caller with
-no token could walk a list of guessed machine names and learn which of them are real and which are
-refusing it — from the error code alone, before ever seeing a screen. That is worth more than any
-single screen, because it is a map.
+With the relay gone this got simpler rather than more subtle, and it is worth keeping the reasoning,
+because the obvious "improvement" reintroduces a real leak.
 
-Collapsing the two into `NotFound` means a wrong token and a wrong name are indistinguishable. The
-e2e test asserts exactly that, and asserts it three ways: wrong token, absent token, and a name
-that is not there all return the same code.
+The retired relay answered `NotFound` instead of `AuthFailed`, because a `NotFound`/`AuthFailed`
+distinction turns a reachable relay into an **enumeration oracle**: a caller with no key could walk
+a list of guessed machine names and learn which are real and which are refusing — from the error
+code alone, before seeing a screen. That is a map, worth more than any single screen.
 
-This is also why the relay **does not** answer "busy" itself. It used to, and that leaked too — a
-caller with no valid credential could learn an agent exists *and* is occupied. Busy-ness is now the
-agent's answer, given only after it has accepted the credential, so the only callers who can see it
-are ones already allowed to ask.
+Direct connections change the shape of the question but not the answer. The agent is addressed by
+`host:port`, so the set of machines is no longer a list the controller walks; a caller who has reached
+*this* port already knows *this* machine exists. What it still gains by being careful is the
+distinction between "wrong machine id" and "wrong key", which would confirm that a guessed id is
+live. So the agent answers `AuthFailed` for both, and puts both ids in the message text -- which
+names the real machine *and* says nothing an attacker did not already have. `agent_test` pins it.
+
+`AgentBusy` is likewise only ever sent after a credential has been accepted, so a caller with no key
+cannot learn whether a machine is in use.
 
 ### What is still unauthenticated
 
-**The relay connection itself.** `HELLO` checks only the protocol range, so any host that can reach
-the port can still pair as a controller and be routed; the credential gates the *endpoint*, not the
-relay. This is deliberate: the relay has nothing to check against, because holding the key is
-exactly what it is designed not to do. `relay_e2e_test.cpp` pins this in a test as well, so a
-release that authenticates the relay connection changes a named test rather than a comment.
+**The connection, before `OPEN_SESSION`.** `HELLO` checks only the protocol range, so any host that
+can reach the port can pair as a controller and read the agent's `HELLO_ACK` — which names the
+machine. The credential gates the *session*, not the port. This is deliberate: the agent has exactly
+one thing to check against, and spending it at connect time would mean one credential per TCP
+connection and a key exchange on every reconnect, for a listener that is already refusing to do
+anything until it sees a valid key.
 
-If the relay ever needs to know who is calling, the natural place is a token the *relay* mints,
-distinct from the per-endpoint ones — it is a different question and deserves a different answer.
+The consequence, stated plainly: **an agent on a shared network announces itself to anything that
+connects.** TLS over the `ByteStream` seam is what closes that, and it is the first thing to add
+rather than the capture backend, because it changes what a port on an untrusted network exposes.
+
+`PING` is answered before authentication, deliberately: a controller has to be able to tell a dead
+endpoint from a slow one, and liveness is already implied by the port being open. `agent_test` pins
+both of these, so hardening either one changes a named test rather than a comment.
 
 ### Key storage, and the one thing deferred
 
-Tokens are 160-bit random values, compared with a constant-time compare, and stored by the agent in
-its config file with owner-only permissions. The controller stores it in the OS keychain (Windows
-Credential Manager, macOS Keychain, libsecret).
+Keys are 160-bit random values, compared with a constant-time compare. `remote-worker keygen` mints
+one, prints it **once** alongside the machine id derived from it, and writes it to the agent's key
+file with owner-only permissions. Running `keygen` again reports the existing machine id and refuses
+to reprint the key; `--rotate` replaces it, which necessarily changes the machine id and so requires
+every controller to be paired again.
+
+The agent will not start without a usable key, and says to run `keygen`. An agent that started without
+one would be an unauthenticated remote-control port, which is not a default worth shipping.
+
+The controller stores the key in the OS keychain (Windows Credential Manager, macOS Keychain,
+libsecret).
 
 The agent storing the token **in the clear** rather than as a hash is the deliberate simplification
 here, and it is the piece most worth revisiting: someone who can read the agent's config can then
@@ -249,7 +344,7 @@ parsed.
 ### 5.3 `OPEN_SESSION` / `SESSION_OPENED` / `CLOSE_SESSION`
 
 ```
-OPEN_SESSION     string agent_id, u16 width, u16 height, u8 quality, bytes credential
+OPEN_SESSION     string machine_id, u16 width, u16 height, u8 quality, bytes credential
 SESSION_OPENED   string session_id, u16 width, u16 height, u8 capture
 CLOSE_SESSION    u16 reason
 ```
@@ -257,7 +352,8 @@ CLOSE_SESSION    u16 reason
 `quality` is a hint, not a command: 0 low, 1 medium, 2 high, 3 lossless. The agent's adaptive rate
 controller is free to disagree, and reports what it actually settled on in `CONFIG`.
 
-`credential` is the token the agent minted for this controller — see section 3. The relay forwards it
+`machine_id` is the id derived from the endpoint's key, and `credential` is that key — see
+section 3. The relay forwards it
 without reading it and the agent is the only party that checks it, so an empty one is a rejected
 credential rather than a legacy request. The mod's `OpenSession.toString()` deliberately prints the
 credential's *length* and not its bytes: a protocol dump in a log or a bug report is exactly where a
@@ -358,14 +454,15 @@ array appear.
 ### 5.10 `AGENT_HELLO` / `AGENT_HEARTBEAT` / `AGENT_STATS`
 
 ```
-AGENT_HELLO       string agent_id, u8 os, u16 capabilities, u16 max_width, u16 max_height,
-                  u8 encoders
+AGENT_HELLO       string machine_id, string label, u8 os, u16 capabilities, u16 max_width,
+                  u16 max_height, u8 encoders
 AGENT_HEARTBEAT   u32 uptime_seconds, u16 active_sessions
 AGENT_STATS       u32 frames_sent, u32 frames_dropped, u64 bytes_sent, u16 encode_ms_avg,
                   u16 bitrate_kbps, u8 fps, u8 input_queue_depth
 ```
 
-`os`: 1 Windows, 2 Linux, 3 macOS. `capabilities`: bit 0 interactive, bit 1 locked, bit 2
+`machine_id` is derived from the agent's key; `label` is cosmetic, may repeat, and is never used to
+look a machine up. `os`: 1 Windows, 2 Linux, 3 macOS. `capabilities`: bit 0 interactive, bit 1 locked, bit 2
 multi-monitor, bit 3 consent-gated. `encoders`: bit 0 H.264 hardware, bit 1 H.264 software,
 bit 2 AV1 hardware.
 

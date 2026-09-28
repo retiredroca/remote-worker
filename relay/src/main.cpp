@@ -1,8 +1,15 @@
-// The relay daemon.
+// remote-worker: the endpoint agent and the key tool, in one executable.
 //
-// Prints the pairing fingerprint on startup, because that is what a controller and an agent are
-// paired against. Refuses a non-loopback bind unless explicitly told otherwise -- see
-// Relay::start, which is where that decision is enforced and why.
+// One file to copy to a machine, so the thing that runs on an endpoint is a single binary, and the
+// agent and the tools that provision it cannot drift apart in version.
+//
+//   remote-worker agent    run the endpoint agent (this is what goes on the remote machine)
+//   remote-worker keygen   mint a key for a machine and print it, along with its machine id
+//   remote-worker relay    the LAN relay, still here while controllers connect to agents directly
+//
+// The agent is the only thing that needs to run on the remote system. The relay is on the
+// controller's side and is being retired: a controller can hold a list of endpoints and connect to
+// them directly, so it does not need a separate program in the middle.
 #include <chrono>
 #include <csignal>
 #include <cstring>
@@ -10,6 +17,8 @@
 #include <string>
 #include <thread>
 
+#include "rw/agent.hpp"
+#include "rw/credential.hpp"
 #include "rw/relay.hpp"
 
 namespace {
@@ -20,79 +29,190 @@ void on_signal(int) {
     g_stop = 1;
 }
 
-void usage(const char* argv0) {
-    std::cerr << "usage: " << argv0 << " [options]\n"
-              << "  --bind <addr>              interface to listen on (default 127.0.0.1)\n"
-              << "  --port <n>                 port, 0 to let the OS choose (default 0)\n"
-              << "  --allow-unauthenticated-lan permit a non-loopback bind before TLS is wired in\n"
-              << "  --quiet                    suppress per-event logging\n"
-              << "  --once                     serve a single pass and exit (used by tests)\n";
+void usage() {
+    std::cerr << "usage: remote-worker <command> [options]\n"
+              << "  agent  [--bind <addr>] [--port <n>] [--key-file <path>]\n"
+              << "         Serve one controller, on the machine being watched.\n"
+              << "  keygen [--key-file <path>] [--rotate]\n"
+              << "         Mint a key for this machine and print it once, with its machine id.\n"
+              << "  relay  [--bind <addr>] [--port <n>]\n"
+              << "         The LAN relay. Being retired; controllers talk to agents directly.\n";
 }
 
-}  // namespace
+// Matches "--flag value" and "--flag=value".
+//
+// `consume_next` comes back true when the value is the following argument, so the caller knows to
+// read argv[i + 1]. That distinction is the whole point: reading a value only for the "=" form
+// silently ignored the space-separated form and fell back to the default, which for --key-file
+// would have written the machine's real key somewhere nobody asked for.
+bool take(const std::string& arg, const std::string& name, std::string* value,
+          bool* consume_next) {
+    *consume_next = false;
+    if (arg == name) {
+        *consume_next = true;
+        return true;
+    }
+    if (arg.rfind(name + "=", 0) == 0) {
+        *value = arg.substr(name.size() + 1);
+        return true;
+    }
+    return false;
+}
 
-int main(int argc, char** argv) {
-    rw::RelayOptions options;
-    bool once = false;
+// The value for a flag already known to be present: from argv[i + 1] for "--flag value", or the
+// `parsed` value for "--flag=value".
+std::string require_value(const std::string& arg, const std::string& name, const std::string& parsed,
+                          int* i, int argc, char** argv) {
+    if (arg == name) {
+        if (*i + 1 >= argc) {
+            throw std::runtime_error(std::string(name) + " needs a value");
+        }
+        return argv[++(*i)];
+    }
+    return parsed;
+}
 
-    for (int i = 1; i < argc; i++) {
+int command_keygen(int argc, char** argv) {
+    std::string keyFile = rw::KeyStore::default_path();
+    bool rotate = false;
+    for (int i = 2; i < argc; i++) {
         std::string arg = argv[i];
-        auto next = [&](const char* what) -> std::string {
-            if (i + 1 >= argc) {
-                std::cerr << "error: " << what << " needs a value\n";
-                std::exit(2);
-            }
-            return argv[++i];
-        };
-        if (arg == "--bind") {
-            options.bindAddress = next("--bind");
-        } else if (arg == "--port") {
-            options.port = static_cast<uint16_t>(std::stoi(next("--port")));
-        } else if (arg == "--allow-unauthenticated-lan") {
-            options.allowUnauthenticatedLan = true;
-        } else if (arg == "--quiet") {
-            options.verbose = false;
-        } else if (arg == "--once") {
-            once = true;
-        } else if (arg == "-h" || arg == "--help") {
-            usage(argv[0]);
-            return 0;
+        std::string value;
+        bool consume_next = false;
+        if (take(arg, "--key-file", &value, &consume_next)) {
+            keyFile = consume_next ? require_value(arg, "--key-file", value, &i, argc, argv) : value;
+        } else if (arg == "--rotate") {
+            rotate = true;
         } else {
-            std::cerr << "error: unknown option " << arg << "\n";
-            usage(argv[0]);
+            std::cerr << "error: keygen does not take " << arg << "\n";
             return 2;
         }
     }
-
-    rw::Relay relay(options);
+    rw::KeyStore store(keyFile);
+    std::string existing;
     std::string error;
-    if (!relay.start(&error)) {
+    if (store.load(&existing, &error)) {
+        if (!rotate) {
+            // Printing the key again would undo the point of showing it once.
+            std::cout << "This machine already has a key. It is not shown again.\n"
+                      << "  machine id: " << rw::machine_id(existing) << "\n"
+                      << "  key file:   " << keyFile << "\n"
+                      << "Regenerate with: remote-worker keygen --rotate\n"
+                      << "Regenerating changes the machine id, so every controller must be paired\n"
+                      << "again -- which is the point of rotating a key.\n";
+            return 0;
+        }
+        std::cout << "Replacing the existing key. The machine id will change.\n";
+    } else if (!error.empty()) {
+        // Never overwrite a key we could not read: that would unpair the machine for no reason.
         std::cerr << "error: " << error << "\n";
         return 1;
     }
 
-    std::cout << "remote-worker relay listening on " << options.bindAddress << ":" << relay.port()
-              << "\n";
-    if (options.allowUnauthenticatedLan && options.bindAddress != "127.0.0.1") {
-        std::cerr << "WARNING: serving " << options.bindAddress
-                  << " with no authentication and no transport encryption.\n"
-                  << "         Any host on this network may pair as a controller and be routed to\n"
-                  << "         any endpoint it can name, and anything watching the wire can read\n"
-                  << "         the frames. Acceptable only on a network you control.\n";
+    std::string key = rw::generate_token();
+    if (!store.store(key, &error)) {
+        std::cerr << "error: " << error << "\n";
+        return 1;
     }
+    std::cout << "Key for this machine. Shown once -- put it in the mod.\n\n"
+              << "  machine id:  " << rw::machine_id(key) << "\n"
+              << "  key:         " << key << "\n"
+              << "  key file:    " << keyFile << "\n\n"
+              << "The machine id is derived from the key, so this machine is known by that id until\n"
+              << "the key is regenerated. Anyone who can see the id on the network learns nothing:\n"
+              << "it is not the key and cannot be replayed as one.\n";
+    return 0;
+}
 
-    if (once) {
-        relay.run_once(0);
-        relay.stop();
-        return 0;
+int command_agent(int argc, char** argv) {
+    rw::AgentOptions options;
+    for (int i = 2; i < argc; i++) {
+        std::string arg = argv[i];
+        std::string value;
+        bool consume_next = false;
+        if (take(arg, "--bind", &value, &consume_next) && consume_next) {
+            options.bindAddress = require_value(arg, "--bind", value, &i, argc, argv);
+        } else if (take(arg, "--port", &value, &consume_next) && consume_next) {
+            options.port = static_cast<uint16_t>(std::stoi(
+                require_value(arg, "--port", value, &i, argc, argv)));
+        } else if (take(arg, "--key-file", &value, &consume_next) && consume_next) {
+            options.keyFile = require_value(arg, "--key-file", value, &i, argc, argv);
+        } else {
+            std::cerr << "error: agent does not take " << arg << "\n";
+            return 2;
+        }
     }
+    rw::AgentServer server(options);
+    std::string error;
+    if (!server.start(&error)) {
+        std::cerr << "error: " << error << "\n";
+        return 1;
+    }
+    std::signal(SIGINT, on_signal);
+    std::signal(SIGTERM, on_signal);
+    while (g_stop == 0) {
+        server.run_once(50);
+    }
+    std::cout << "\nstopping\n";
+    return 0;
+}
 
+int command_relay(int argc, char** argv) {
+    rw::RelayOptions options;
+    for (int i = 2; i < argc; i++) {
+        std::string arg = argv[i];
+        std::string value;
+        bool consume_next = false;
+        if (take(arg, "--bind", &value, &consume_next) && consume_next) {
+            options.bindAddress = require_value(arg, "--bind", value, &i, argc, argv);
+        } else if (take(arg, "--port", &value, &consume_next) && consume_next) {
+            options.port = static_cast<uint16_t>(std::stoi(
+                require_value(arg, "--port", value, &i, argc, argv)));
+        } else if (arg == "--allow-unauthenticated-lan") {
+            options.allowUnauthenticatedLan = true;
+        } else if (arg == "--quiet") {
+            options.verbose = false;
+        } else {
+            std::cerr << "error: relay does not take " << arg << "\n";
+            return 2;
+        }
+    }
+    std::string error;
+    rw::Relay relay(options);
+    if (!relay.start(&error)) {
+        std::cerr << "error: " << error << "\n";
+        return 1;
+    }
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
     while (g_stop == 0) {
         relay.run_once(50);
     }
-    std::cout << "\nshutting down\n";
     relay.stop();
     return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        usage();
+        return 2;
+    }
+    const std::string command = argv[1];
+    try {
+        if (command == "keygen") return command_keygen(argc, argv);
+        if (command == "agent") return command_agent(argc, argv);
+        if (command == "relay") return command_relay(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << "error: " << e.what() << "\n";
+        return 1;
+    }
+    if (command == "-h" || command == "--help" || command == "help") {
+        usage();
+        return 0;
+    }
+    std::cerr << "error: unknown command '" << command << "'\n";
+    usage();
+    return 2;
 }

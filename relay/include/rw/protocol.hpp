@@ -53,6 +53,9 @@ enum class ErrorCode : uint16_t {
     LimitExceeded = 5,
     AgentBusy = 6,
     UnsupportedCapture = 7,
+    // Two live agents claimed the same id. The registry is keyed on that id, so
+    // allowing it would silently hand the controller an arbitrary machine.
+    DuplicateEndpoint = 8,
 };
 enum class CloseReason : uint16_t { Client = 0, Agent = 1, Error = 2, Replaced = 3 };
 enum class CaptureMode : uint8_t { Unknown = 0, Interactive = 1, Locked = 2 };
@@ -114,7 +117,10 @@ struct ErrorMsg {
 };
 
 struct OpenSession {
-    std::string agentId;
+    // The machine being asked for, addressed by the id derived from its key. Not a display name:
+    // regenerating a key changes this, which is correct -- after a rotation nothing can prove the
+    // machine is the same one.
+    std::string machineId;
     uint16_t width = 0;
     uint16_t height = 0;
     uint8_t quality = 0;
@@ -198,7 +204,12 @@ struct InputBatch {
 };
 
 struct AgentHello {
-    std::string agentId;
+    // Derived from the agent's key, and what peers address this machine by.
+    std::string machineId;
+    // Free text for the user interface. May repeat between endpoints, and nothing looks a machine up
+    // by it -- the relay's registry is keyed on machineId, so two machines may both be called
+    // "DESKTOP-EXAMPLE" without colliding.
+    std::string label;
     uint8_t os = 0;
     uint16_t capabilities = 0;
     uint16_t maxWidth = 0;

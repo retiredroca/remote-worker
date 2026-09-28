@@ -69,6 +69,7 @@ ERROR_BAD_MESSAGE = 4
 ERROR_LIMIT_EXCEEDED = 5
 ERROR_AGENT_BUSY = 6
 ERROR_UNSUPPORTED_CAPTURE = 7
+ERROR_DUPLICATE_ENDPOINT = 8
 
 CLOSE_CLIENT = 0
 CLOSE_AGENT = 1
@@ -138,6 +139,11 @@ def check_int(v, lo, hi, what):
         raise TypeError("%s value must be an int, got %r" % (what, v))
     if not lo <= v <= hi:
         raise ValueError("%s value %d out of range [%d, %d]" % (what, v, lo, hi))
+
+
+# The id an agent is known by, derived from its key (see machine_id in rw/credential.cpp). Used as
+# the default so the vectors read like a real endpoint, and so a rename shows up in every vector.
+MACHINE_ID = "0123456789abcdef"
 
 
 class Writer:
@@ -267,10 +273,10 @@ def msg_error(code=ERROR_BAD_MESSAGE, message="rect_count 0 is not encodable"):
     return frame(ERROR, bytes(p.buf))
 
 
-def msg_open_session(agent_id="agent-workstation-01", width=1920, height=1080, quality=QUALITY_HIGH,
+def msg_open_session(machine_id=MACHINE_ID, width=1920, height=1080, quality=QUALITY_HIGH,
                      credential=b""):
     p = Writer()
-    p.string(agent_id)
+    p.string(machine_id)
     p.u16(width)
     p.u16(height)
     p.u8(quality)
@@ -379,11 +385,14 @@ def msg_input_batch(records=None):
     return frame(INPUT_BATCH, bytes(p.buf))
 
 
-def msg_agent_hello(agent_id="agent-workstation-01", os=OS_WINDOWS,
+def msg_agent_hello(machine_id=MACHINE_ID, label="DESKTOP-EXAMPLE", os=OS_WINDOWS,
                     caps=CAP_ATTRIB_INTERACTIVE | CAP_ATTRIB_LOCKED, max_w=3840, max_h=2160,
                     encoders=ENC_H264_HW | ENC_H264_SW):
     p = Writer()
-    p.string(agent_id)
+    # machine_id first, then a cosmetic label. The id is derived from the agent's key and is what
+    # peers address the machine by; the label is free text, may repeat, and is only ever displayed.
+    p.string(machine_id)
+    p.string(label)
     p.u8(os)
     p.u16(caps)
     p.u16(max_w)
@@ -486,13 +495,17 @@ def roundtrips():
         ("agent_hello_windows", msg_agent_hello(),
          ["AgentHello.maxWidth=3840", "AgentHello.maxHeight=2160"]),
         ("agent_hello_linux_x11", msg_agent_hello(
-            agent_id="agent-x11", os=OS_LINUX,
+            machine_id="1111222233334444", label="build-box-01", os=OS_LINUX,
             caps=CAP_ATTRIB_INTERACTIVE | CAP_ATTRIB_CONSENT_GATED, encoders=ENC_H264_SW),
          ["AgentHello.os=2", "AgentHello.maxWidth=3840", "AgentHello.maxHeight=2160"]),
         ("agent_hello_macos", msg_agent_hello(
-            agent_id="agent-mac", os=OS_MACOS,
+            machine_id="aaaabbbbccccdddd", label="Mac-Studio-über", os=OS_MACOS,
             caps=CAP_ATTRIB_INTERACTIVE | CAP_ATTRIB_CONSENT_GATED, encoders=ENC_H264_HW),
          ["AgentHello.os=3"]),
+        # Two endpoints may share a label, because nothing looks a machine up by it.
+        ("agent_hello_duplicate_label", msg_agent_hello(
+            machine_id="9999aaaabbbbcccc", label="DESKTOP-EXAMPLE", os=OS_WINDOWS)),
+        ("agent_hello_empty_label", msg_agent_hello(machine_id="0000111122223333", label="")),
         ("agent_heartbeat", msg_agent_heartbeat()),
         ("agent_stats", msg_agent_stats(), ["AgentStats.bytesSent=9812340000",
                                             "AgentStats.bitrateKbps=3400"]),
@@ -576,7 +589,7 @@ def rejects():
 def _open_session_credential_past_end():
     """OPEN_SESSION with every fixed field present and a credential length that overruns."""
     p = Writer()
-    p.string_bytes(b"agent-workstation-01")
+    p.string_bytes(b"0123456789abcdef")
     p.u16(1920)
     p.u16(1080)
     p.u8(QUALITY_HIGH)

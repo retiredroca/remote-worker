@@ -411,3 +411,86 @@ symptom looked like. Keep the check that proves it.
 - **Check that proves it:**
 - **Cause:** `file:line`
 - **Fix:**
+
+## The staged binary was deleted by its own Sync, and the release shipped without it
+
+**Symptom.** `build/release/` held the three jars and nothing else, even though the CMake build had
+produced the binary. A local-only release finished green and printed `release set OK`, and the GitHub
+release had no executable in it. Nothing anywhere complained.
+
+**Check.** `ls build/release/`, and `cmp build/cpp/staged/remote-worker.exe
+dist/remote-worker-<version>-windows-x86_64.exe` to confirm the staged file is byte-identical to
+what CMake just built rather than a leftover.
+
+**Cause.** Two, and each was silent on its own.
+
+1. `releaseJars` is a **Sync** task, so it makes `build/release` match its inputs exactly and deletes
+   everything that is not a jar. The binary was staged with
+   `tasks.named('releaseJars') { dependsOn stageCppBinaries }`, i.e. *before* the Sync, so the Sync
+   deleted it again a moment later. `dependsOn` on a task that wipes the destination is the wrong
+   direction; `finalizedBy` is the right one.
+   (`build.gradle`, the `stageCppBinaries` registration.)
+
+2. Even with the order fixed, a retired name survived. `stageCppBinaries` is a `Copy`, which adds and
+   never removes, and Gradle skips an up-to-date `Sync`, so a file from an earlier build (or from
+   before the target was renamed `remote-worker-relay` to `remote-worker`) was still there and was
+   published as though it were current. The staging task now deletes other non-jar `remote-worker*`
+   files itself, before copying.
+
+**Fix, and the rule.** The release script now *requires* exactly one binary, checks its name against
+`ALLOWED_BINARY`, and uploads it with an executable content type. A missing or misnamed binary is a
+hard failure, because the omission is otherwise invisible: the jar count is right and the build is
+green. See also "A green build is not a release" below.
+
+**The near-miss worth remembering.** While fixing the stale-name sweep, the filter was
+`name.startsWith('remote-worker')` — and the *mod's id is also* `remote-worker`, so it deleted the
+mod's own jars. Any prefix sweep in a directory holding two naming schemes needs the exclusion to be
+explicit (`!name.endsWith('.jar')`), not implied.
+
+## A blocking listener parks the daemon in accept() forever
+
+**Symptom.** `agent_test` hung indefinitely (>20 min) on the first `run_once()` with no controller
+connected. Not a crash and not a spin -- a wait.
+
+**Check.** `timeout 30 ./agent_test.exe`; before the fix it produced no output past the fixture
+banner, after it completes in under a second.
+
+**Cause.** `SocketStream::listen()` never called `set_nonblocking()` on the listener
+(`relay/src/stream.cpp`). `accept()` on a blocking socket does not return "nothing is queued", it
+waits, and both daemons call `accept()` at the top of every `run_once()`. This was pre-existing: the
+relay had the identical bug, and the relay e2e test never saw it because it only reached `accept()`
+when a connection was already queued. A daemon started with nothing connecting to it does nothing
+but hang.
+
+**Fix.** The listener is made non-blocking in `listen()`, so `accept()` reports EWOULDBLOCK and the
+loop returns. Accepted sockets were already non-blocking; only the listener was missed.
+
+**The lesson.** A test that only exercises the busy path cannot see a listener that blocks when idle.
+`run_once(0)` on a *quiet* agent is the case that had to be covered.
+
+## A key's machine id depended on how you held the key
+
+**Symptom.** `AgentServer::start` rejected a key that `KeyStore` had just written and saved itself:
+`the key in ... is not a valid key`.
+
+**Check.** `parse_key(key_text)` and `machine_id(key_text)` against the same key's bytes; the ids
+differed.
+
+**Cause.** Three places decoded a key and had drifted apart. `KeyStore::store` and `KeyStore::load`
+each stripped the `rw1_` prefix by hand before calling `parse_token`; `machine_id(const std::string&)`
+did not strip it *or* decode the base32, and hashed the key's **text** instead of its **bytes**.
+
+**Why the tests missed it.** Every test used the text form on both sides, so it agreed with itself.
+A machine id derived from text and an id derived from bytes are different identities for the same
+key, and nothing compared the two. `credential_test` now pins `machine_id(text) == machine_id(bytes)`
+and the round trip through `format_token`/`parse_key`.
+
+**Fix.** One entry point, `parse_key`, which accepts the key with or without the prefix, and the
+string overload of `machine_id` now goes through it. The bug had the worse failure mode of the
+session: a controller configuring the id its own tooling printed would have paired with a machine
+that insisted it was a different machine, with no obvious cause.
+
+**Also fixed here.** `KeyStore::store` on Windows shells out to `mkdir`, which is a cmd builtin, not
+an executable. It worked in testing only because a temp directory already existed. Replaced with
+`std::filesystem::create_directories`, which creates intermediate directories on both platforms and
+takes an `error_code` instead of failing the process.

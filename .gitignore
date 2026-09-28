@@ -11,6 +11,10 @@ cmake-build-*/
 dist/*.jar
 dist/**/*.jar
 dist/changelog.md
+# The staged agent binary, for the same reason as the jars above. Without this line the release
+# script's own output directory would be a source of untracked files that show up in git status.
+dist/*.exe
+dist/**/*.exe
 
 # IDE
 .idea/

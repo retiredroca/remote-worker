@@ -69,6 +69,9 @@ public final class Protocol {
     public static final int ERROR_LIMIT_EXCEEDED = 5;
     public static final int ERROR_AGENT_BUSY = 6;
     public static final int ERROR_UNSUPPORTED_CAPTURE = 7;
+    /** Two live agents claimed the same id. The registry is keyed on that id, so allowing it
+     *  would silently hand the controller an arbitrary machine. */
+    public static final int ERROR_DUPLICATE_ENDPOINT = 8;
 
     public static final int CLOSE_CLIENT = 0;
     public static final int CLOSE_AGENT = 1;

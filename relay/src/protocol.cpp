@@ -56,7 +56,7 @@ void encode_body(WireWriter& w, const Message& m) {
             } else if constexpr (std::is_same_v<T, ErrorMsg>) {
                 w.u16(b.code).string(b.message);
             } else if constexpr (std::is_same_v<T, OpenSession>) {
-                w.string(b.agentId).u16(b.width).u16(b.height).u8(b.quality)
+                w.string(b.machineId).u16(b.width).u16(b.height).u8(b.quality)
                     .bytes_field(b.credential);
             } else if constexpr (std::is_same_v<T, SessionOpened>) {
                 w.string(b.sessionId).u16(b.width).u16(b.height).u8(b.capture);
@@ -95,7 +95,8 @@ void encode_body(WireWriter& w, const Message& m) {
                     w.u8(r.kind).u8(r.flags).u16(0).i32(r.x).i32(r.y).u32(r.data);
                 }
             } else if constexpr (std::is_same_v<T, AgentHello>) {
-                w.string(b.agentId).u8(b.os).u16(b.capabilities).u16(b.maxWidth).u16(b.maxHeight)
+                w.string(b.machineId).string(b.label).u8(b.os).u16(b.capabilities).u16(b.maxWidth)
+                    .u16(b.maxHeight)
                     .u8(b.encoders);
             } else if constexpr (std::is_same_v<T, AgentHeartbeat>) {
                 w.u32(b.uptimeSeconds).u16(b.activeSessions);
@@ -213,7 +214,7 @@ Message parse_message(std::span<const uint8_t> region, std::size_t off) {
                 b.code = r.u16();
                 b.message = r.string();
             } else if constexpr (std::is_same_v<T, OpenSession>) {
-                b.agentId = r.string();
+                b.machineId = r.string();
                 b.width = r.u16();
                 b.height = r.u16();
                 b.quality = r.u8();
@@ -301,7 +302,8 @@ Message parse_message(std::span<const uint8_t> region, std::size_t off) {
                     b.records.push_back(rec);
                 }
             } else if constexpr (std::is_same_v<T, AgentHello>) {
-                b.agentId = r.string();
+                b.machineId = r.string();
+                b.label = r.string();
                 b.os = r.u8();
                 b.capabilities = r.u16();
                 b.maxWidth = r.u16();

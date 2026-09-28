@@ -1,7 +1,14 @@
 #include "rw/credential.hpp"
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <stdexcept>
+
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 #ifdef _WIN32
 #include <windows.h>
@@ -78,6 +85,12 @@ bool parse_token(const std::string& text, std::vector<uint8_t>* out) {
     return true;
 }
 
+bool parse_key(const std::string& text, std::vector<uint8_t>* out) {
+    // The prefix is optional on the way in, so a key read from a file, a key typed by a user and a
+    // key built by a test all decode the same way.
+    return parse_token(text.rfind("rw1_", 0) == 0 ? text.substr(4) : text, out);
+}
+
 std::string generate_token() {
     std::vector<uint8_t> bytes(kTokenBytes);
 #ifdef _WIN32
@@ -115,19 +128,112 @@ bool constant_time_equals(std::span<const uint8_t> a, std::span<const uint8_t> b
     return difference == 0 && a.size() == b.size();
 }
 
-std::string token_fingerprint(std::span<const uint8_t> bytes) {
-    // FNV-1a, 64-bit. For labelling only -- never to verify a token.
-    uint64_t hash = 1469598103934665603ull;
-    for (uint8_t b : bytes) {
+std::string machine_id(std::span<const uint8_t> key) {
+    // FNV-1a, 64-bit, widened by a second pass with a different offset so the low half is not a
+    // trivial function of the high half. 16 hex characters, stable for the life of the key.
+    auto fnv = [](uint64_t hash, uint8_t b) {
         hash ^= b;
         hash *= 1099511628211ull;
+        return hash;
+    };
+    uint64_t high = 1469598103934665603ull;
+    uint64_t low = 1099511628211ull;
+    for (uint8_t b : key) {
+        high = fnv(high, b);
+        low = fnv(low, static_cast<uint8_t>(b + 0x9E));
     }
     static const char* digits = "0123456789abcdef";
-    std::string out;
-    for (int i = 15; i >= 0; i--) {
-        out += digits[(hash >> (i * 4)) & 0xF];
+    std::string out(16, '0');
+    for (int i = 0; i < 8; i++) {
+        out[i] = digits[(high >> ((7 - i) * 4)) & 0xF];
+        out[8 + i] = digits[(low >> ((7 - i) * 4)) & 0xF];
     }
     return out;
+}
+
+std::string KeyStore::default_path() {
+#ifdef _WIN32
+    const char* appdata = std::getenv("APPDATA");
+    if (appdata != nullptr && appdata[0] != '\0') {
+        return std::string(appdata) + "\\remote-worker\\agent.key";
+    }
+#else
+    const char* home = std::getenv("HOME");
+    if (home != nullptr && home[0] != '\0') {
+        return std::string(home) + "/.config/remote-worker/agent.key";
+    }
+#endif
+    return "remote-worker-agent.key";
+}
+
+KeyStore::KeyStore() : path_(default_path()) {}
+KeyStore::KeyStore(std::string path) : path_(std::move(path)) {}
+
+bool KeyStore::load(std::string* key_text, std::string* error) const {
+    std::FILE* file = std::fopen(path_.c_str(), "rb");
+    if (file == nullptr) {
+        return false;  // no key yet; that is a normal first run, not an error
+    }
+    char buffer[256] = {0};
+    std::size_t got = std::fread(buffer, 1, sizeof(buffer) - 1, file);
+    std::fclose(file);
+    std::string text(buffer, got);
+    while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' ')) {
+        text.pop_back();
+    }
+    if (text.rfind("rw1_", 0) != 0) {
+        // Refuse rather than regenerate: overwriting a key you cannot parse would destroy it and
+        // unpair the machine for no reason.
+        if (error != nullptr) {
+            *error = path_ + " does not start with rw1_ -- refusing to treat it as a key";
+        }
+        return false;
+    }
+    std::vector<uint8_t> parsed;
+    if (!parse_key(text, &parsed) || parsed.size() != kTokenBytes) {
+        if (error != nullptr) {
+            *error = path_ + " is not a well-formed " + std::to_string(kTokenBytes) + "-byte key";
+        }
+        return false;
+    }
+    *key_text = text;
+    return true;
+}
+
+bool KeyStore::store(const std::string& key_text, std::string* error) const {
+    std::vector<uint8_t> parsed;
+    if (!parse_key(key_text, &parsed) || parsed.size() != kTokenBytes) {
+        if (error != nullptr) {
+            *error = "refusing to store a malformed key";
+        }
+        return false;
+    }
+    // create_directories, not a shell `mkdir`: `mkdir` is a cmd builtin on Windows, so the
+    // system() call only ever worked on a path whose directory already happened to exist -- the
+    // first real run on a clean machine would have found no key file and no error explaining why.
+    // It also creates intermediate directories, and takes an error_code rather than being able to
+    // take the process down.
+    std::filesystem::path path_of_file(path_);
+    if (path_of_file.has_parent_path()) {
+        std::error_code ignored;
+        std::filesystem::create_directories(path_of_file.parent_path(), ignored);
+    }
+    std::FILE* file = std::fopen(path_.c_str(), "wb");
+    if (file == nullptr) {
+        if (error != nullptr) {
+            *error = "cannot write " + path_;
+        }
+        return false;
+    }
+    std::fwrite(key_text.data(), 1, key_text.size(), file);
+    std::fputc('\n', file);
+    std::fclose(file);
+#ifndef _WIN32
+    // Owner-only where the platform has such a thing. On Windows the file inherits the directory
+    // ACL, which is the normal protection there and is not something to fake with a mode bit.
+    std::chmod(path_.c_str(), S_IRUSR | S_IWUSR);
+#endif
+    return true;
 }
 
 }  // namespace rw

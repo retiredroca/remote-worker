@@ -170,7 +170,12 @@ public final class Messages {
     }
 
     public static final class OpenSession implements Message {
-        public final String agentId;
+        /**
+         * The machine being asked for, addressed by the id derived from its key. Not a display
+         * name: regenerating a key changes this, which is correct, because after a rotation nothing
+         * can prove the machine is the same one.
+         */
+        public final String machineId;
         public final int width;
         public final int height;
         public final int quality;
@@ -180,12 +185,12 @@ public final class Messages {
          */
         public final byte[] credential;
 
-        public OpenSession(String agentId, int width, int height, int quality) {
-            this(agentId, width, height, quality, new byte[0]);
+        public OpenSession(String machineId, int width, int height, int quality) {
+            this(machineId, width, height, quality, new byte[0]);
         }
 
-        public OpenSession(String agentId, int width, int height, int quality, byte[] credential) {
-            this.agentId = agentId;
+        public OpenSession(String machineId, int width, int height, int quality, byte[] credential) {
+            this.machineId = machineId;
             this.width = width;
             this.height = height;
             this.quality = quality;
@@ -212,14 +217,14 @@ public final class Messages {
 
         @Override
         public void encode(WireWriter out) {
-            out.string(agentId).u16(width).u16(height).u8(quality).bytesField(credential);
+            out.string(machineId).u16(width).u16(height).u8(quality).bytesField(credential);
         }
 
         @Override
         public String toString() {
             // Deliberately does not print the credential: a protocol dump in a log or a bug report
             // is exactly where a token would otherwise end up.
-            return "OpenSession{" + agentId + ", " + width + "x" + height + ", q=" + quality
+            return "OpenSession{" + machineId + ", " + width + "x" + height + ", q=" + quality
                     + ", credential=" + credential.length + " bytes}";
         }
     }
@@ -700,16 +705,26 @@ public final class Messages {
     // --- agent control and telemetry ---------------------------------------------------------------
 
     public static final class AgentHello implements Message {
-        public final String agentId;
+        /**
+         * Derived from the agent's key, and what peers address this machine by.
+         */
+        public final String machineId;
+        /**
+         * Free text for the user interface. May repeat between endpoints, and nothing looks a machine
+         * up by it: the relay's registry is keyed on machineId, so two machines may both be called
+         * "DESKTOP-EXAMPLE" without colliding.
+         */
+        public final String label;
         public final int os;
         public final int capabilities;
         public final int maxWidth;
         public final int maxHeight;
         public final int encoders;
 
-        public AgentHello(String agentId, int os, int capabilities, int maxWidth, int maxHeight,
-                          int encoders) {
-            this.agentId = agentId;
+        public AgentHello(String machineId, String label, int os, int capabilities, int maxWidth,
+                          int maxHeight, int encoders) {
+            this.machineId = machineId;
+            this.label = label;
             this.os = os;
             this.capabilities = capabilities;
             this.maxWidth = maxWidth;
@@ -718,12 +733,13 @@ public final class Messages {
         }
 
         static AgentHello decode(WireReader r) throws ProtocolException {
-            String id = r.string();
+            String machineId = r.string();
+            String label = r.string();
             int os = r.u8();
             int caps = r.u16();
             int w = r.u16();
             int h = r.u16();
-            return new AgentHello(id, os, caps, w, h, r.u8());
+            return new AgentHello(machineId, label, os, caps, w, h, r.u8());
         }
 
         @Override
@@ -738,12 +754,13 @@ public final class Messages {
 
         @Override
         public void encode(WireWriter out) {
-            out.string(agentId).u8(os).u16(capabilities).u16(maxWidth).u16(maxHeight).u8(encoders);
+            out.string(machineId).string(label).u8(os).u16(capabilities).u16(maxWidth)
+                    .u16(maxHeight).u8(encoders);
         }
 
         @Override
         public String toString() {
-            return "AgentHello{" + agentId + ", os=" + os + ", caps=0x" + Integer.toHexString(capabilities)
+            return "AgentHello{" + machineId + " (" + label + "), os=" + os + ", caps=0x" + Integer.toHexString(capabilities)
                     + ", encoders=0x" + Integer.toHexString(encoders) + "}";
         }
     }

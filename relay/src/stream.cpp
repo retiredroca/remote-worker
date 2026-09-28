@@ -240,7 +240,14 @@ std::optional<SocketStream> SocketStream::listen(const std::string& address, uin
     if (bound_port != nullptr) {
         *bound_port = ntohs(addr.sin_port);
     }
-    return SocketStream(fd);
+    // The listener must be non-blocking. accept() on a blocking socket does not return "nothing is
+    // queued" -- it waits -- and both daemons call accept() at the top of every run_once(), so a
+    // blocking listener parks the whole process in accept() the moment it is idle. The tests happened
+    // to reach accept() only when a connection was already queued, so they never saw it; a daemon
+    // started with nothing connecting to it does nothing but hang.
+    SocketStream listener(fd);
+    listener.set_nonblocking();
+    return listener;
 }
 
 }  // namespace rw

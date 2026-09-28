@@ -151,6 +151,107 @@ tasks.register('publishLibrary') {
     }
 }
 
+// The C++ relay and (later) the agent, built by CMake rather than Gradle.
+//
+// Two build systems now, so this is where the hand-off happens and where the release artifact is
+// NAMED. Naming lives here rather than in CMake deliberately: the name has to carry the version
+// stamp, which only Gradle knows, and it is the allowlist in tools/release.py and
+// .github/workflows/release-mod.yml that both sides must agree with. One owner for the name.
+def cppBuildDir = layout.buildDirectory.dir('cpp')
+def cppStaged = cppBuildDir.map { it.dir('staged') }
+def cppSource = file('CMakeLists.txt')
+
+// The version the binaries ship as: the stamped version of the module that owns the release, so the
+// binary and the jars in one release always carry the same number. A single-module project has one
+// answer; a multi-module project needs this pointed at whichever module owns the release.
+def cppVersion = stampVersion(componentVersions.getProperty(loadModule(moduleDirs[0]).getProperty('id')))
+
+// Host platform, in the vocabulary the release artifact uses. Never a bare "linux"/"windows": a
+// download page has to be able to tell a Windows user which file to take, and an unlabelled binary
+// is worse than none.
+def hostPlatform = {
+    String os = System.getProperty('os.name').toLowerCase(Locale.ROOT)
+    String arch = System.getProperty('os.arch').toLowerCase(Locale.ROOT)
+    String osPart = os.contains('windows') ? 'windows' : (os.contains('mac') || os.contains('darwin') ? 'macos' : 'linux')
+    String archPart = (arch in ['amd64', 'x86_64']) ? 'x86_64' : (arch in ['aarch64', 'arm64'] ? 'arm64' : arch)
+    return "${osPart}-${archPart}"
+}()
+
+def cmakeConfigure = tasks.register('cmakeConfigure', Exec) {
+    description = 'Configures the CMake build for the relay and agent.'
+    inputs.file cppSource
+    inputs.dir file('relay')
+    outputs.dir cppBuildDir
+    commandLine 'cmake', '-S', projectDir.absolutePath, '-B', cppBuildDir.get().asFile.absolutePath,
+            '-DCMAKE_BUILD_TYPE=Release'
+    // Re-running configure on every build is slow and, with some generators, prompts. Skip it when
+    // the build directory is already there and the inputs have not moved.
+    onlyIf {
+        !cppBuildDir.get().asFile.isDirectory()
+    }
+}
+
+def cppBuild = tasks.register('cppBuild', Exec) {
+    description = 'Builds the C++ relay (and the agent, once it exists).'
+    dependsOn cmakeConfigure
+    inputs.dir file('relay')
+    outputs.dir cppStaged
+    commandLine 'cmake', '--build', cppBuildDir.get().asFile.absolutePath, '--config', 'Release'
+}
+
+// Copies the built binary into build/release/ under its release name, so everything the release
+// publishes lives in one directory. Only the host platform is built here: cross-compiling all three
+// needs a runner per platform, which is a CI matrix, not a Gradle task.
+// The single file CMake stages, by platform. Named rather than globbed: see stageCppBinaries.
+def cppBinaryName = System.getProperty('os.name').toLowerCase(Locale.ROOT).contains('windows')
+        ? 'remote-worker.exe'
+        : 'remote-worker'
+
+// The release name a staged binary gets, so doFirst can recognise the current one and spare it.
+def renameName = { String name ->
+    String ext = name.endsWith('.exe') ? '.exe' : ''
+    String stem = name.substring(0, name.length() - ext.length())
+    "${stem}-${cppVersion}-${hostPlatform}${ext}"
+}
+
+def stageCppBinaries = tasks.register('stageCppBinaries', Copy) {
+    description = 'Stages the built C++ binaries into build/release with their release names.'
+    dependsOn cppBuild
+    from(cppStaged)
+    into layout.buildDirectory.dir('release')
+    // Exactly the one expected file, not a glob. CMake's staged directory is not cleaned between
+    // builds, so after the target was renamed from remote-worker-relay to remote-worker both files
+    // sat there and a glob copied the retired binary into the release as though it were current.
+    // Naming the file means a stale artifact cannot be published, and a missing one is a build
+    // failure rather than a silent omission.
+    include cppBinaryName
+    // Clear any other staged binary of ours first. releaseJars is a Sync and would do this, but
+    // Gradle skips an up-to-date Sync, so a file left by an earlier build (or an earlier name for
+    // this one) can survive a green build and be published. Copy adds and never removes, so the
+    // removal has to be explicit here.
+    doFirst {
+        def dir = layout.buildDirectory.dir('release').get().asFile
+        if (dir.isDirectory()) {
+            // Not a jar, and not the binary this build produced. The jar test is not redundant:
+            // the mod's id is 'remote-worker' too, so a plain prefix test matches the mod's own
+            // jars and deletes them.
+            def keep = renameName(cppBinaryName)
+            dir.listFiles()?.findAll {
+                it.isFile() && !it.name.endsWith('.jar') && it.name.startsWith('remote-worker') &&
+                        it.name != keep
+            }?.each { it.delete() }
+        }
+    }
+    rename renameName
+}
+
+// The binary is staged *after* releaseJars, not before. releaseJars is a Sync task, which means it
+// makes build/release match its inputs exactly -- so it deletes anything in that directory that is
+// not a jar. Staging the binary first therefore had it deleted again a moment later, and the release
+// quietly shipped no binary at all. Nothing failed: the build was green, the jar count was right, and
+// the omission only showed up by listing build/release.
+tasks.named('releaseJars') { finalizedBy stageCppBinaries }
+
 tasks.named('build') {
     dependsOn 'releaseJars'
 

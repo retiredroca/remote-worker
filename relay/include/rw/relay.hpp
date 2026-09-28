@@ -20,7 +20,10 @@
 namespace rw {
 
 struct EndpointInfo {
-    std::string agentId;
+    // Derived from the endpoint's key; what the registry is keyed on and what a controller asks for.
+    std::string machineId;
+    // Free text for the user interface. May repeat: nothing looks a machine up by it.
+    std::string label;
     uint8_t os = 0;
     uint16_t capabilities = 0;
     uint16_t maxWidth = 0;
@@ -30,7 +33,7 @@ struct EndpointInfo {
 
 struct SessionInfo {
     std::string sessionId;
-    std::string agentId;
+    std::string machineId;
     uint16_t width = 0;
     uint16_t height = 0;
     uint8_t capture = 0;
@@ -70,7 +73,7 @@ public:
     size_t connectionCount() const { return connections_.size(); }
     size_t forwardedMessages() const { return forwardedMessages_; }
     std::vector<EndpointInfo> endpoints() const;
-    std::optional<SessionInfo> sessionForAgent(const std::string& agentId) const;
+    std::optional<SessionInfo> sessionForMachine(const std::string& machineId) const;
     std::optional<SessionInfo> sessionById(const std::string& sessionId) const;
 
 private:
@@ -78,7 +81,10 @@ private:
         std::unique_ptr<SocketStream> socket;
         std::unique_ptr<FramedChannel> channel;
         Role role = Role::Unknown;
+        // The machine id derived from the agent's key. For a controller this is whatever it called
+        // itself, which is only used for logging.
         std::string instanceId;
+        std::string label;
         // Set on a controller once a session is bound; set on an agent while it serves one.
         std::string boundSessionId;
         // A controller's outstanding OPEN_SESSION, awaiting the agent's SESSION_OPENED.
@@ -94,10 +100,10 @@ private:
     // `initiator` is whoever caused the teardown, and is the one side NOT notified.
     void unbind_session(const std::string& sessionId, const std::string& why,
                        Connection* initiator);
-    Connection* find_agent(const std::string& agentId);
+    Connection* find_agent(const std::string& machineId);
     // The controller holding an unanswered OPEN_SESSION for this agent, if any. Used to route the
     // agent's accept-or-refuse answer back to whoever asked, before any session is bound.
-    Connection* find_pending_controller(const std::string& agentId);
+    Connection* find_pending_controller(const std::string& machineId);
     // connections_ holds unique_ptr, so the slot of a connection is found by scanning.
     // That is O(n) over the handful of live connections, and it cannot be wrong the way
     // pointer arithmetic on a vector of unique_ptr would be.
