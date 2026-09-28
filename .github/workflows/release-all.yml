@@ -1,0 +1,31 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      mod:
+        description: 'Components to re-version: a module id from versions.properties, or "all". Only the named component gets a new version and nothing infers it from the files changed.'
+        default: 'all'
+      minecraft:
+        description: 'Minecraft version to build (folder under versions/)'
+        default: '1.21.1'
+      tag:
+        description: 'Optional release tag override (must be unique). Leave blank to auto-generate v<library>.<yymmddhh>.'
+        default: ''
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: >-
+      github.event_name != 'issue_comment' ||
+      contains(github.event.comment.body, '/release-all')
+    uses: ./.github/workflows/release-mod.yml
+    with:
+      mod: ${{ github.event.inputs.mod || 'all' }}
+      release_tag: ${{ github.event.inputs.tag }}
+      minecraft: ${{ github.event.inputs.minecraft || '1.21.1' }}
+    secrets: inherit
