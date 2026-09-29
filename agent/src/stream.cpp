@@ -7,6 +7,9 @@ using socklen_t = int;
 #else
 #include <arpa/inet.h>
 #include <fcntl.h>
+// netdb.h declares addrinfo, getaddrinfo and freeaddrinfo, which listen() uses. On Windows they
+// come from ws2tcpip.h instead. Nothing on POSIX includes it for you.
+#include <netdb.h>
 #include <poll.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>

@@ -68,7 +68,13 @@ jobs:
         with:
           python-version: '3.12'
 
+      # `shell: bash` on every run step in this job, not just where a shell feature is needed.
+      # GitHub's default shell on a Windows runner is pwsh, where `set -euo pipefail` is a parse
+      # error rather than a command: the first run failed on the windows-latest leg with
+      # "A parameter cannot be found that matches parameter name 'euo'" before compiling anything.
+      # The failure looked like a build failure and was not one.
       - name: Build and test the agent
+        shell: bash
         run: |
           set -euo pipefail
           cmake -S . -B build-cpp -DCMAKE_BUILD_TYPE=RelWithDebInfo
@@ -111,6 +117,7 @@ jobs:
           fetch-depth: 0
 
       - name: Resolve java version
+        shell: bash
         run: |
           set -euo pipefail
           java_ver=$(grep -E '^java_version=' "versions/${MC_VERSION}/version.properties" | head -1 | cut -d= -f2 | tr -d '\r')
@@ -122,6 +129,7 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
 
       - name: Prepare
+        shell: bash
         run: |
           find . -name gradle.properties -not -path '*/build/*' -exec sed -i '/org.gradle.java.home/d' {} +
           chmod +x ./gradlew
@@ -130,15 +138,19 @@ jobs:
       # cmake on ubuntu, duplicating the linux build and making the jar job depend on a C++
       # toolchain it does not need. The matrix is the only place the agent is built.
       - name: Build loader jars
+        shell: bash
         run: ./gradlew --no-daemon -Pmc=${MC_VERSION} -PskipCpp=true --refresh-dependencies releaseLoaderJars
 
       - name: Build loader bundles
+        shell: bash
         run: ./gradlew --no-daemon -Pmc=${MC_VERSION} -PskipCpp=true releaseLoaderBundles
 
       - name: Build universal jars
+        shell: bash
         run: ./gradlew --no-daemon -Pmc=${MC_VERSION} -PskipCpp=true releaseUniversal
 
       - name: Build universal bundles + union
+        shell: bash
         run: |
           set -euo pipefail
           ./gradlew --no-daemon -Pmc=${MC_VERSION} -PskipCpp=true releaseUniversalBundles releaseJars
@@ -165,6 +177,7 @@ jobs:
           fetch-depth: 0
 
       - name: Prepare dist
+        shell: bash
         run: rm -rf dist && mkdir -p dist
 
       - uses: actions/download-artifact@v4
@@ -183,6 +196,7 @@ jobs:
       # The point of this step. A jar-count check cannot see a missing binary, and a release with
       # no agent looks exactly like a good one. The platform list must match the agent matrix.
       - name: Verify release contents
+        shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'

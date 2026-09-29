@@ -548,3 +548,45 @@ sources. The failure surfaces one step later, as a missing artifact.
 produce, not the exit code: `ls build/cpp/staged/remote-worker.exe` and `ls build/release/`. A green
 build with a missing artifact is the specific failure this whole file keeps finding, in five different
 guises now. `./gradlew build` does not fail on a missing C++ source.
+
+## The first CI run failed in two unrelated ways, neither of them the build
+
+**Symptom.** All three legs of the agent matrix failed on the first `--ci` release
+(`v1.0.0.26092819`), while `./gradlew build` and `ctest` were green locally throughout. The two
+failures looked alike from the job list ("agent ... completed failure") and were not.
+
+**Check that proves it, and separates them:**
+
+```bash
+# which of the two it is, per runner -- fetch the job log
+curl -sSL -H "Authorization: token $TOKEN" \
+  "https://api.github.com/repos/<slug>/remote-worker/actions/jobs/<job-id>/logs" | grep -iE "error:"
+```
+
+- **linux + macos, same two lines**: `stream.cpp:206: 'addrinfo' was not declared in this scope`.
+  A real compile error, and the only thing the local build could never have caught.
+- **windows, no compiler output at all**, ending in
+  `Set-Variable: A parameter cannot be found that matches parameter name 'euo'`: not a build
+  failure. `set -euo pipefail` is bash syntax, and the default `run` shell on a Windows runner is
+  `pwsh`, which parsed it as a cmdlet call. The step echoed the three commands and exited 1 before
+  running any of them.
+
+**Cause.**
+
+1. `agent/src/stream.cpp` included `<arpa/inet.h>`, `<netinet/in.h>` and friends for the POSIX
+   branch, but not `<netdb.h>`, which is what declares `addrinfo`, `getaddrinfo` and `freeaddrinfo`.
+   On Windows they come from `<ws2tcpip.h>`, so the Windows build compiled and the POSIX one could
+   not. This is the concrete cost of the POSIX socket code never having been compiled: it is now
+   compiled on every release, which is the only reason this was found at all.
+2. No `shell:` on the run steps, so each platform got its own default. Anything bash-shaped in a
+   `run:` block is a latent failure on Windows.
+
+**Fix.** `#include <netdb.h>` in the POSIX branch of `stream.cpp`, and `shell: bash` on **every**
+`run:` step in `release-ci.yml` -- not only the ones that need a shell feature. Pinning it on the
+ubuntu-only jobs costs nothing and removes the class of bug.
+
+**The lesson, and it generalises past this file.** A green local build and a green `ctest` say
+nothing about a platform they never ran on. The MinGW `g++` on this machine is `x86_64-w64-mingw32`,
+so it compiles the `_WIN32` branch; the `#else` branch is not merely unverified, it is *unreachable*
+locally. Every guard in this project now has a runner that exercises it, and that runner is the only
+thing standing between "written to be portable" and "is portable".
