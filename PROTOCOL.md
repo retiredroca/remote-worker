@@ -81,9 +81,8 @@ validate a received region in one call.
 
 ### 2.2 Byte order
 
-All integers are little-endian. Every platform this ships on is little-endian (x86-64, aarch64 on
-Windows and Linux, arm64 macOS), so there is no byte-order negotiation and no per-field cost to
-being explicit.
+All integers are little-endian. Every platform this ships on is little-endian (x86-64 and arm64, on
+Windows and Linux), so there is no byte-order negotiation and no per-field cost to being explicit.
 
 ### 2.3 Limits
 
@@ -294,8 +293,7 @@ every controller to be paired again.
 The agent will not start without a usable key, and says to run `keygen`. An agent that started without
 one would be an unauthenticated remote-control port, which is not a default worth shipping.
 
-The controller stores the key in the OS keychain (Windows Credential Manager, macOS Keychain,
-libsecret).
+The controller stores the key in the OS keychain (Windows Credential Manager, libsecret).
 
 The agent storing the token **in the clear** rather than as a hash is the deliberate simplification
 here, and it is the piece most worth revisiting: someone who can read the agent's config can then

@@ -62,10 +62,10 @@ It does, in order:
 4. stop.
 
 The tag push is the hand-off. `release-ci.yml` then builds the mod jars on ubuntu (Java only), builds
-and `ctest`s the agent natively on `ubuntu-latest` / `windows-latest` / `macos-14`, and — only if
-every one of those passed and the assembled set is exactly one binary per platform — creates the
-GitHub release with all six files attached. A platform that fails stops the release rather than
-shipping a partial set.
+and `ctest`s the agent natively on four runners — `ubuntu-latest` / `windows-latest` for x86_64 and
+`ubuntu-24.04-arm` / `windows-11-arm` for arm64 — and, only if every one of those passed and the
+assembled set is exactly one binary per platform, creates the GitHub release with all seven files
+attached. A platform that fails stops the release rather than shipping a partial set.
 
 Nothing else is published anywhere. This project has no CurseForge or Modrinth presence; that came
 from the template it was generated from, together with three workflows and a set of flags that

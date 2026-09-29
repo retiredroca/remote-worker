@@ -8,9 +8,9 @@ package com.retiredroca.remoteworker.protocol;
  * definition and is checked against it by {@code ProtocolVectorsCheck} on every build, so a
  * disagreement here fails the build rather than turning into a stream of subtly wrong bytes.
  *
- * <p>All integers are little-endian. Every platform this ships on is little-endian (x86-64,
- * aarch64 on Windows and Linux, arm64 macOS), so there is no byte-order negotiation and no
- * per-field cost for being explicit about it.
+ * <p>All integers are little-endian. Every platform this ships on is little-endian (x86-64 and
+ * arm64, on Windows and Linux), so there is no byte-order negotiation and no per-field cost for
+ * being explicit about it.
  */
 public final class Protocol {
     private Protocol() {

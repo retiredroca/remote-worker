@@ -262,8 +262,9 @@ def stageCppBinaries = tasks.register('stageCppBinaries', Copy) {
 tasks.named('releaseJars') { finalizedBy stageCppBinaries }
 
 // Catches the one class of error a Windows build cannot see: a POSIX-only symbol used in a file
-// whose `#else` branch does not include the header declaring it. That has broken the Linux and macOS
-// CI legs twice, in two different files, and each time only CI found it.
+// whose `#else` branch does not include the header declaring it. That has broken the Linux CI legs
+// twice, in two different files, and each time only CI found it. It is a text check rather than a
+// compile, because the failure mode is a missing #include that no single-platform build can see.
 tasks.register('checkPosixIncludes') {
     description = 'Checks that POSIX-only C++ symbols have the headers that declare them.'
     group = 'verification'

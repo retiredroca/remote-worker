@@ -51,9 +51,10 @@ jobs:
       fail-fast: false
       matrix:
         agent:
-          - { name: linux-x86_64,   os: ubuntu-latest,  ext: '' }
-          - { name: windows-x86_64, os: windows-latest, ext: '.exe' }
-          - { name: macos-arm64,    os: macos-14,       ext: '' }
+            - { name: linux-x86_64,   os: ubuntu-latest,    ext: '' }
+            - { name: windows-x86_64, os: windows-latest,   ext: '.exe' }
+            - { name: linux-arm64,    os: ubuntu-24.04-arm, ext: '' }
+            - { name: windows-arm64,  os: windows-11-arm,   ext: '.exe' }
     steps:
       - uses: actions/checkout@v5
         with:
@@ -219,7 +220,7 @@ jobs:
           if bad:
               sys.exit(f'unexpected jar names: {bad}')
 
-          platforms = ['linux-x86_64', 'windows-x86_64', 'macos-arm64']
+          platforms = ['linux-x86_64', 'windows-x86_64', 'linux-arm64', 'windows-arm64']
           present = {p.name for p in dist.iterdir() if p.is_file() and not p.name.endswith('.jar')}
 
           matched = {}

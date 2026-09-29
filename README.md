@@ -122,43 +122,27 @@ has the reasoning in full.
 ### Installing the agent
 
 Every release carries one agent binary per platform, named
-`remote-worker-<version>-<os>-<arch>`, under [Releases](#releases).
+`remote-worker-<version>-<os>-<arch>`, under [Releases](#releases):
 
-**macOS** — Homebrew is the easy path, and it is the reason a `.pkg` is *not* offered:
+| Platform | Asset suffix |
+| --- | --- |
+| Windows x86-64 | `windows-x86_64.exe` |
+| Windows ARM64 | `windows-arm64.exe` |
+| Linux x86-64 | `linux-x86_64` |
+| Linux ARM64 | `linux-arm64` |
 
-```bash
-brew tap retiredroca/remote-worker https://github.com/retiredroca/remote-worker
-brew install retiredroca/remote-worker/remote-worker
-remote-worker keygen
-```
-
-The formula is [`homebrew-tap/Formula/remote-worker.rb`](homebrew-tap/Formula/remote-worker.rb).
-The fully-qualified name is used above because a bare `brew install remote-worker` is ambiguous with
-any other tap that happens to have a formula of the same name.
-
-> **The tap is unverified.** It was written from the Homebrew formula rules and the shasum is a real
-> hash of the real published asset, but it has never been run through `brew` — the machine that wrote
-> it is on Windows. If `brew tap` or `brew install` misbehaves, that is the first thing to fix. The
-> conventional home for a tap is a repository of its own named `homebrew-tap`, which would also make
-> the short `brew tap retiredroca/tap` form work; this directory is laid out to be moved there
-> unchanged.
-The released binary is **unsigned and not notarised** — no Developer ID certificate, which costs
-$99/year and a Mac. Homebrew downloads the file itself rather than a browser, so the quarantine
-attribute is not set and the binary should run without a Gatekeeper prompt. If your setup
-quarantines it anyway:
+Download the one matching your machine, mark it executable, and give it a key:
 
 ```bash
-xattr -dr com.apple.quarantine "$(which remote-worker)"
-```
-
-**Everything else** — download, mark it executable, and give it a key:
-
-```bash
+# Linux; use the right suffix for your architecture
 curl -LO https://github.com/retiredroca/remote-worker/releases/download/v<version>/remote-worker-<version>-linux-x86_64
 chmod +x remote-worker-<version>-linux-x86_64
 ./remote-worker-<version>-linux-x86_64 keygen
 ./remote-worker-<version>-linux-x86_64 agent
 ```
+
+On Windows, download `remote-worker-<version>-windows-x86_64.exe` (or `windows-arm64.exe`) and run
+it directly.
 
 Verify what you downloaded, since there is no signature on any platform:
 
@@ -167,30 +151,19 @@ shasum -a 256 remote-worker-<version>-linux-x86_64
 # compare against the asset digest GitHub shows on the release page
 ```
 
-**Intel macOS is not built.** `macos-14` is arm64, and the `macos-13` x86_64 runner is being
-retired — one failing would block every release, since the workflow requires all of its platforms.
-Adding it means a row in the agent matrix *and* in the verify step's platform list.
+**macOS is not built, and is not planned.** It was dropped rather than supported badly: the only
+runner available for it was arm64, and the x86_64 runner was being retired, so it would have meant a
+platform with no build for the users most likely to want it. There is no `brew` formula and no
+`.pkg`. The wire format still has a macOS value in the `os` field of a `HELLO` (`PROTOCOL.md`), since
+that is what the format describes rather than what we build.
 
 **A Linux agent is a real product decision, not just a build.** It has no capture backend yet, so it
 can pair and be refused for that, and nothing more. Capture on an unattended Linux box needs
 X11/Wayland and DRM in the picture, which is a different piece of work from producing a binary.
 
-#### Keeping the formula's shasum current
+### Building the agent locally
 
-The formula pins a `sha256`, so **a new release leaves it pointing at the old binary** and
-`brew upgrade` fails with a checksum mismatch until it is bumped. After a release:
-
-```bash
-brew bump-formula-pr --url=https://github.com/retiredroca/remote-worker --formula=remote-worker
-```
-
-That opens a pull request with the new version, url and shasum. If you would rather not run Homebrew,
-edit the three marked lines in the formula by hand — `version`, the `url` line, and `sha256` — and
-take the hash from the release page.
-
-### Building for Linux and macOS
-
-The source compiles on all three platforms: `stream.cpp`, `agent.cpp` and `credential.cpp` guard
+The source compiles on all four targets: `stream.cpp`, `agent.cpp` and `credential.cpp` guard
 their platform sections with `_WIN32`, `generate_token()` reads `/dev/urandom` off Windows, and the
 key file defaults to `$HOME/.config/remote-worker/`.
 
@@ -204,17 +177,6 @@ The `cmake` and `ctest` commands above are the same on both platforms, minus `--
 
 ```bash
 sudo apt install build-essential cmake   # or your distribution's equivalent
-cmake -S . -B build-cpp -DCMAKE_BUILD_TYPE=RelWithDebInfo
-cmake --build build-cpp
-ctest --test-dir build-cpp --output-on-failure
-./build-cpp/bin/remote-worker keygen
-```
-
-macOS:
-
-```bash
-xcode-select --install              # if the command line tools are not already there
-brew install cmake                  # Apple's CMake is stale for C++20
 cmake -S . -B build-cpp -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build-cpp
 ctest --test-dir build-cpp --output-on-failure
@@ -262,10 +224,10 @@ That is the whole local step. It bumps `versions.properties`, commits, creates a
 (`git tag -s`), and pushes it. The tag push is the hand-off: `.github/workflows/release-ci.yml` then
 
 - builds the mod jars on ubuntu (Java only, via `-PskipCpp=true`), and
-- builds and `ctest`s the agent natively on `ubuntu-latest`, `windows-latest` and `macos-14`
-  (linux-x86_64, windows-x86_64, macos-arm64),
+- builds and `ctest`s the agent natively on four GitHub-hosted runners — `ubuntu-latest` and
+  `windows-latest` for x86_64, `ubuntu-24.04-arm` and `windows-11-arm` for arm64,
 
-requires all of it to pass, and creates the GitHub release with the jars and one agent binary per
+  requires all of it to pass, and creates the GitHub release with the jars and one agent binary per
 platform. The private key never leaves your machine; CI only builds what the signed tag names, and
 reads the version you already committed rather than re-stamping it.
 
@@ -318,7 +280,6 @@ versions/<mc>/<module>/
 tools/{versioning,release,protocol_vectors}.py  # version scheme, local release driver, protocol encoder
 tools/make_tablet_texture.py                    # regenerates the tablet texture
 tools/check_posix_includes.py                  # catches a POSIX header a Windows build cannot see
-homebrew-tap/Formula/remote-worker.rb          # `brew tap retiredroca/remote-worker` (macOS, unsigned)
 ```
 
 The two loader builds are separate (Loom and NeoGradle cannot share one Gradle project). The shared
