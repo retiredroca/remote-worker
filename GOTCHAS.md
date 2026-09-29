@@ -581,9 +581,33 @@ curl -sSL -H "Authorization: token $TOKEN" \
 2. No `shell:` on the run steps, so each platform got its own default. Anything bash-shaped in a
    `run:` block is a latent failure on Windows.
 
-**Fix.** `#include <netdb.h>` in the POSIX branch of `stream.cpp`, and `shell: bash` on **every**
-`run:` step in `release-ci.yml` -- not only the ones that need a shell feature. Pinning it on the
-ubuntu-only jobs costs nothing and removes the class of bug.
+**Fix, first pass (incomplete).** `#include <netdb.h>` in the POSIX branch of `stream.cpp`, and
+`shell: bash` on **every** `run:` step in `release-ci.yml` -- not only the ones that need a shell
+feature. Pinning it on the ubuntu-only jobs costs nothing and removes the class of bug.
+
+**Fix, second pass.** That fixed Windows (it went green) but Linux and macOS still failed, on the
+*next* file rather than the first:
+
+```
+agent/src/credential.cpp:234: error: 'chmod' is not a member of 'std'; did you mean 'chmod'?
+```
+
+`#ifndef _WIN32 std::chmod(path, S_IRUSR | S_IWUSR);` -- the call that makes the key file
+owner-only. `<sys/stat.h>` declares the POSIX `::chmod`; libstdc++ provides no `std::chmod`, so the
+`std::` qualification is a Windows-only-ism that MSVC happens to accept. The surrounding
+`#include <filesystem>` was a red herring: it was already included, and adding it again changed
+nothing. GCC's own suggestion in the diagnostic is the whole fix.
+
+**The rule this pair of failures establishes.** One run finds one error per platform per file, and
+fixing the first hides the second. Two things follow:
+
+- **Read the error, do not pattern-match it.** The obvious guess for "`chmod` is not a member of
+  `std`" is "a missing include". It was not; the include was there and the *spelling* was wrong.
+- **Audit the guarded code by hand for the same mistake.** Every `std::`-qualified call inside
+  `#ifndef _WIN32` is suspect in the same way, and no local build will ever check one. The
+  `std::fopen` and `std::getenv` calls in the same file are fine -- `<cstdio>`/`<cstdlib>` are
+  specified to put these in `std` as well as the global namespace -- which is exactly why the wrong
+  one is not obvious from reading it.
 
 **The lesson, and it generalises past this file.** A green local build and a green `ctest` say
 nothing about a platform they never ran on. The MinGW `g++` on this machine is `x86_64-w64-mingw32`,

@@ -231,7 +231,12 @@ bool KeyStore::store(const std::string& key_text, std::string* error) const {
 #ifndef _WIN32
     // Owner-only where the platform has such a thing. On Windows the file inherits the directory
     // ACL, which is the normal protection there and is not something to fake with a mode bit.
-    std::chmod(path_.c_str(), S_IRUSR | S_IWUSR);
+    //
+    // ::chmod, not std::chmod. <sys/stat.h> declares the POSIX spelling, and libstdc++ does not
+    // provide the std:: one -- GCC's own diagnostic is "did you mean 'chmod'?". This never showed
+    // up locally because the whole call is inside #ifndef _WIN32 and the local toolchain is
+    # MSVC, which does not compile this branch at all.
+    ::chmod(path_.c_str(), S_IRUSR | S_IWUSR);
 #endif
     return true;
 }
