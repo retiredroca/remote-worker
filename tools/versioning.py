@@ -189,10 +189,6 @@ def tag(version: str, stamp: str) -> str:
     return f"v{floor(version)}.{stamp}"
 
 
-def tag(version: str, stamp: str) -> str:
-    return f"v{floor(version)}.{stamp}"
-
-
 # --- modules ------------------------------------------------------------------------
 
 

@@ -1,8 +1,8 @@
-# This repository also hosts a published Maven repository under repo/.
-# Store everything byte-for-byte so Gradle-generated checksums stay valid.
+# Store everything byte-for-byte. There is no published Maven repository here -- module.properties
+# sets library=false for every module -- but jars are staged through this tree by the release
+# pipeline, and checksum drift on a binary is worth avoiding regardless.
 * -text
 
-# Version/state files are read by CI with grep/cut, so keep them LF: a trailing \r would leak into
-# the version strings and break the publish file globs.
+# Version files are read by CI with grep/cut, so keep them LF: a trailing \r would leak into the
+# version strings and break the release file globs.
 versions.properties text eol=lf
-release-state.properties text eol=lf

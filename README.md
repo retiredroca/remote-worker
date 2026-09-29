@@ -66,6 +66,11 @@ The **machine id is not in the file, and does not need to be**: the mod derives 
 the same function the agent uses, so an endpoint cannot be configured with an id that disagrees with
 its own key. If you rotate a key, delete the endpoint and re-add it.
 
+`port` has no default worth guessing at: the agent binds port 0 and takes whatever the OS gives it,
+logging the result as `machine id <id> listening on 0.0.0.0:<port>`. Either start the agent with
+`--port 47311` to pin it, or copy the logged port into the endpoint. The two must agree — there is no
+discovery, and the mod will simply fail to connect if they do not.
+
 `host` must not be this machine. `localhost` and `127.x.x.x` are refused by the mod before it opens a
 socket, and by the agent as `SelfConnection` — see below.
 
@@ -98,10 +103,10 @@ credentials test, and an agent test that drives a real controller peer over loop
 what the agent accepts and refuses.
 
 **What you will see today.** `keygen` prints a machine id and a key, and `agent` starts and listens.
-Nothing can drive it yet, because the mod has no networking: a controller that connects today is
-authenticated and then refused with `UnsupportedCapture`, and the agent logs why. That is the
-intended behaviour rather than a stub — a controller left waiting on a screen that never arrives
-cannot tell "not implemented" from "broken", so the agent says which it is.
+It does log the port it bound on, so the endpoint you write into the mod can match it. A controller
+that connects today is authenticated and then refused with `UnsupportedCapture`, and the agent logs
+why. That is the intended behaviour rather than a stub — a controller left waiting on a screen that
+never arrives cannot tell "not implemented" from "broken", so the agent says which it is.
 
 **A controller holds a list of endpoints** and connects to each agent directly; there is no relay
 and no discovery. An endpoint is configured, not found.
@@ -268,7 +273,7 @@ versions/<mc>/<module>/
 ├─ module.properties                    # id / name / group / authors / license / description
 ├─ common/                              # shared sources (no loader imports)
 │  ├─ src/main/java/.../RemoteWorker.java      # MOD_ID, id(), the platform accessor
-│  ├─ src/main/java/.../item/          # the tablet, and the holder that resolves it
+│  ├─ src/main/java/.../item/          # the tablet, and the registry holder the loaders fill
 │  ├─ src/main/java/.../client/        # endpoints, the agent client, the tablet screen
 │  ├─ src/main/java/.../credential/    # key format + machine id derivation (matches the C++)
 │  ├─ src/main/java/.../platform/      # the seam each loader implements

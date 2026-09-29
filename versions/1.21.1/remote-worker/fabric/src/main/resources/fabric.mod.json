@@ -9,7 +9,7 @@
   "environment": "*",
   "entrypoints": {
     "main": [
-      "com.retiredroca.remoteworker.fabric.ExampleModFabric"
+        "com.retiredroca.remoteworker.fabric.RemoteWorkerFabric"
     ]
   },
   "depends": {

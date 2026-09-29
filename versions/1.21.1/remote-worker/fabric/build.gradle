@@ -127,7 +127,46 @@ tasks.register('protocolCheck', JavaExec) {
     args protocolVectorsFile.get().asFile.absolutePath
 }
 
-tasks.named('check') { dependsOn tasks.named('protocolCheck') }
+  tasks.named('check') { dependsOn tasks.named('protocolCheck') }
+
+  // Catches the one class of error nothing else can see: fabric.mod.json naming an entrypoint class
+  // that does not exist. processResources only expands ${...} tokens, and the JVM does not resolve
+  // the entrypoint until the mod is loaded, so a rename that misses the json produces a green build,
+  // a passing test suite, and a jar that cannot start. That is not hypothetical: this repo shipped
+  // a released Fabric jar pointing at `ExampleModFabric` after the ExampleMod -> RemoteWorker
+  // rename, because nothing compared the two. It verifies against the compiled classes rather than
+  // the jar because `check` runs before remapJar, and the jar is assembled from the same classes.
+  tasks.register('checkEntrypointClasses') {
+      description = 'Checks that every entrypoint class named in fabric.mod.json exists.'
+      group = 'verification'
+      def meta = file('src/main/resources/fabric.mod.json')
+      def classesDir = sourceSets.main.output.classesDirs
+      inputs.file meta
+      inputs.files classesDir
+      outputs.upToDateWhen { false }
+      doLast {
+          def declared = new groovy.json.JsonSlurper().parse(meta, 'UTF-8')
+                  ?.entrypoints?.main ?: []
+          if (declared.isEmpty()) {
+              throw new GradleException('fabric.mod.json declares no "main" entrypoint')
+          }
+          def roots = classesDir.files
+          def missing = declared.findAll { fqcn ->
+              def rel = fqcn.replace('.', '/') + '.class'
+              !roots.any { new File(it, rel).isFile() }
+          }
+          if (missing) {
+              throw new GradleException(
+                      "fabric.mod.json names entrypoint class(es) that are not compiled: ${missing}\n" +
+                      'Fabric resolves this at mod load and will refuse to start. Either the class is ' +
+                      'misnamed here, or the Java file is missing or not in this source set.')
+          }
+          logger.lifecycle("fabric.mod.json entrypoints resolve: ${declared.join(', ')}")
+      }
+  }
+
+  tasks.named('check') { dependsOn tasks.named('checkEntrypointClasses') }
+
 
 loom {
     // Official Mojang mappings so the source matches the NeoForge build 1:1.

@@ -91,6 +91,11 @@ made that way is incomplete for anyone else.
 --local-only         build and stage the jars locally only: no commit, tag, push or GitHub release.
                      versions.properties is still bumped so the local jars carry the next version;
                      undo with `git checkout -- versions.properties`.
+--bump patch|minor|major   move the semantic version line and stop: no build, no tag, no push. Used
+                     so a feature branch's jars are distinguishable from the released line by
+                     filename. Left uncommitted and staged for review unless --commit is added.
+--commit             with --bump, commit the bump as well. Without it you get the edit and a
+                     reminder to commit it yourself.
 ```
 
 ### Testing a change without publishing

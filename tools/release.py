@@ -255,10 +255,7 @@ def expected_jars(mc):
     loaders = ["fabric", "neoforge"]
     loader_jars = len(ids) * len(loaders)
     universal = len(ids)
-    bundles = 0
-    bundles_file = ROOT / "bundles.properties"
-    if bundles_file.exists():
-        bundles = len([k for k in read_props(bundles_file) if k.startswith("bundle.")])
+    bundles = len(bundle_definitions())
     return loader_jars + universal + bundles * (1 + len(loaders))
 
 
@@ -501,7 +498,7 @@ def main():
     ap.add_argument("--bump", choices=("patch", "minor", "major"), default=None,
                     help="move the semantic version line and stop: no build, no tag, no push. A feature "
                          "branch takes the next patch so its jars are distinguishable from the released "
-                         "line by filename. Commits the change; --dry-run shows it without writing.")
+                         "line by filename. Left uncommitted unless --commit is also given.")
     ap.add_argument("--commit", action="store_true",
                     help="with --bump, also commit the change (otherwise it is left staged for review)")
     args = ap.parse_args()

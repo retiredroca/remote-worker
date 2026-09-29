@@ -53,8 +53,9 @@ enum class ErrorCode : uint16_t {
     LimitExceeded = 5,
     AgentBusy = 6,
     UnsupportedCapture = 7,
-    // Two live agents claimed the same id. The registry is keyed on that id, so
-    // allowing it would silently hand the controller an arbitrary machine.
+    // Two live agents claiming the same id. A machine id must name exactly one machine, so this
+    // stays reserved even though nothing in this repo emits it: it is what a future directory or
+    // multi-agent host would need, and the number is already on the wire.
     DuplicateEndpoint = 8,
     // The controller is on this machine. A remote session to yourself is not a remote session, and
     // the usual case is the mod and the agent sharing a computer.
@@ -127,8 +128,8 @@ struct OpenSession {
     uint16_t width = 0;
     uint16_t height = 0;
     uint8_t quality = 0;
-    // The token the agent minted for this controller. Opaque to anything but the agent, which
-    // without reading it; only the named agent decides whether it is acceptable.
+    // The token the agent minted for this controller. Only the agent reads it, to decide whether
+    // this controller is acceptable; every other party treats it as opaque bytes.
     std::vector<uint8_t> credential;
 };
 

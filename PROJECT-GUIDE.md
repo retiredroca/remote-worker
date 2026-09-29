@@ -18,21 +18,21 @@ versions, and adding modules.
 - **Python 3** (for `tools/`). No third-party packages are needed. An IANA timezone for the version
   stamp additionally needs `tzdata`, or a JDK on `JAVA_HOME`/`PATH` (the tool falls back to
   `java.time`).
-- **Git**, and `gh` only if you want CI-side publishing.
+- **Git**. Nothing else: publishing goes through the REST API from `tools/release.py` on the `--ci`
+  path, and CI uploads with `softprops/action-gh-release`. There is no `gh` dependency.
 
 ## Layout
 
 ```
 versions.properties                       # per-module versions: <module-id>=<version>
-bundles.properties                        # (multi) bundle.<name>=<module ids>
 versions/<mc>/version.properties          # Minecraft / loader / toolchain pins (canonical)
 versions/<mc>/<module>/module.properties  # module identity (id / name / group / library / depends)
 versions/<mc>/<module>/common/            # loader-agnostic sources (no loader imports)
 versions/<mc>/<module>/fabric/            # Fabric Loom build (relocates common into <group>.fabric.common)
 versions/<mc>/<module>/neoforge/          # NeoGradle build (relocates common into <group>.neoforge.common)
-gradle/loaders/{fabric,neoforge}.gradle   # shared loader build bodies
 gradle/versions.gradle                    # loads versions/properties + module identity + floor helper
-repo/                                     # in-repo maven for library modules (committed)
+gradle/version-resolver.gradle            # resolves version overrides
+gradle/mirror-sources.gradle              # relocates common sources and prunes stale .class files
 tools/versioning.py                       # stamp / bump / tag / floor
 tools/release.py                          # local release driver
 dist/                                     # release artifacts + changelog (gitignored, .gitkeep tracked)
@@ -58,8 +58,9 @@ versions.
 
 `org.gradle.jvmargs`, `org.gradle.parallel` and `org.gradle.caching` are read from a build's **own
 root** `gradle.properties`. For the composite build that is this file at the project root; a nested
-`gradle.properties` (e.g. `versions/<mc>/<module>/neoforge/`) is ignored when the build runs as part
-of the composite, and only applies if you build that directory directly with `-p`. So keep the JVM
+`gradle.properties` (e.g. `versions/<mc>/<module>/fabric/`, which holds `loom_version`) is ignored
+when the build runs as part of the composite, and only applies if you build that directory directly
+with `-p`. So keep the JVM
 settings in the root file — and if you do set them per module, keep the values identical, or Gradle
 starts a second daemon with the smaller heap.
 
@@ -195,6 +196,6 @@ repository variables.
 | `Could not find ... :api-fabric-<mc>:[1.0.0,1.1)` | The library is not published yet. Run `./gradlew -Pmc=<mc> publishLibrary`, or the two direct `publishMavenJavaPublicationToRepoRepository` invocations. |
 | Gradle fails with `Unsupported class file major version 69` | Gradle is running on too-new a JDK. Point `JAVA_HOME` at a JDK 17–23. |
 | `cannot resolve timezone` from `tools/versioning.py` | The configured `TIMEZONE` is an IANA name and no tzdata/JDK is available. Install `tzdata` (`pip install tzdata`) or use a fixed offset such as `-10:00`. |
-| Release says "release jar set mismatch" | A group build failed or a stale jar is present. Run the four groups in order, or `cleanLoader` + `cleanUniversal`, then retry. |
+| Release says `expected N release jars, found M` | A group build failed or a stale jar is present. Run the four groups in order, or `cleanLoader` + `cleanUniversal`, then retry. |
 | `git add` / release aborts on a dirty tree | Commit or stash first, or pass `--allow-dirty`. |
 | Windows: `gradlew` not found from `release.py` | `tools/release.py` invokes `cmd /c gradlew.bat` on Windows; do not change it to `bash gradlew`, which resolves to Git's bash and mangles paths. |

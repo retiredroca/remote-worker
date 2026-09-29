@@ -69,8 +69,9 @@ public final class Protocol {
     public static final int ERROR_LIMIT_EXCEEDED = 5;
     public static final int ERROR_AGENT_BUSY = 6;
     public static final int ERROR_UNSUPPORTED_CAPTURE = 7;
-    /** Two live agents claimed the same id. The registry is keyed on that id, so allowing it
-     *  would silently hand the controller an arbitrary machine. */
+    /** Two live agents claiming the same id. A machine id must name exactly one machine, so this
+     *  stays reserved even though nothing in this repo emits it: it is what a future directory or
+     *  multi-agent host would need, and the number is already on the wire. */
     public static final int ERROR_DUPLICATE_ENDPOINT = 8;
     /** The controller is on the machine the agent runs on. A remote session to yourself is not a
      *  remote session, and the usual case is the mod and the agent sharing a computer. */

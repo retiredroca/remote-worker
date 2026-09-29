@@ -24,8 +24,9 @@ namespace rw {
 
 struct AgentOptions {
     // Every interface, because the agent is the thing exposed to the network. It authenticates every
-    // request, so binding widely is the design rather than an oversight. Loopback is still fine for
-    // a same-machine controller.
+    // request, so binding widely is the design rather than an oversight. Note that "authenticated"
+    // is not the same as "reachable": a peer on this same host is refused with SelfConnection
+    // (see peer_is_this_host), so loopback is not a usable path either.
     std::string bindAddress = "0.0.0.0";
     uint16_t port = 0;
     // Where the machine's own key lives. An agent with no key refuses to start rather than running

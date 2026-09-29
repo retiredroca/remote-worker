@@ -11,8 +11,8 @@ the definition. `PROTOCOL.md` and the script are edited together, and the Java c
 `common/` is checked against the script's bytes on every build.
 
 That arrangement is deliberate. The format is hand-rolled rather than a Protobuf schema because a
-codegen plugin in the Gradle build was the larger cost, and because three implementations (Java,
-C++, C++) can drift apart silently. Instead:
+codegen plugin in the Gradle build was the larger cost, and because a codec reimplemented in each
+language can drift from its counterpart silently. Instead:
 
 - `python tools/protocol_vectors.py [outfile]` writes the vectors (default
   `build/protocol/vectors.txt`).
@@ -29,9 +29,9 @@ truth, so a committed copy could only ever disagree with it.
 
 | where | language | state |
 |---|---|---|
+| `tools/protocol_vectors.py` | Python | **the normative encoder.** Generates the vectors, so the prose above is the document and the script is the definition |
 | `versions/<mc>/<module>/common/.../protocol/` | Java | codec complete, vectors checked on every build |
-| `agent/` | C++20 | codec complete, vectors checked by `ctest`; the agent's session handling |
-| `agent/` | C++20 | **capture, encode and input injection not started** -- the agent refuses to open a session, see section 3 |
+| `agent/` | C++20 | codec complete, vectors checked by `ctest`; session handling complete, but **capture, encode and input injection not started** -- the agent refuses to open a session, see section 3 |
 
 Two API notes, because they are the kind of thing that silently produces a wrong result:
 
@@ -107,10 +107,10 @@ re-encodes them in the order it now believes, so the bytes match perfectly. `wid
 a vector may carry `expect=Config.width=1920,Config.height=1080`, and the check resolves each
 `Class.field` **by name** via reflection and compares the value.
 
-Not covered at all: a permutation *inside* a nested value, such as a `Rect`'s `w` and `h`. Those
-rely on this document and on the end-to-end tests, where a mis-swapped damage rectangle shows up
-as visibly wrong pixels. Adding a tag to every field would close that too, at the cost that made
-the hand-rolled format not worth it.
+Not covered at all: a permutation *inside* a nested value, such as a `Rect`'s `w` and `h`. With no
+capture backend and no renderer, nothing downstream would show a mis-swapped damage rectangle as
+wrong pixels, so today those rest on this document alone. Adding a tag to every field would close
+that too, at the cost that made the hand-rolled format not worth it.
 
 ## 3. Transport and authentication
 
@@ -195,9 +195,12 @@ viewed is itself a disclosure.
 
 1. `remote-worker keygen` mints a key on the machine being watched: 20 bytes from the OS CSPRNG,
    formatted `rw1_` plus 32 Crockford base32 characters. It is shown **once**, together with the
-   `machine_id` derived from it, and written to the agent's key file. The mod holds the same key and
-   stores it in the OS keychain.
-2. The user configures the endpoint in the mod: the machine's address, plus that machine id and key.
+   `machine_id` derived from it, and written to the agent's key file. The mod holds the same key in
+   `config/remote-worker/endpoints.json`, **in the clear**. Storing it in the OS credential store is
+   intended and not built; see [Key storage, and the one thing deferred](#key-storage-and-the-one-thing-deferred).
+2. The user configures the endpoint in the mod: the machine's address, its port, and that key. Not
+   the machine id — the mod derives that from the key with the same function the agent uses, so an
+   endpoint cannot be configured with an id that disagrees with its own key.
 3. The mod connects to `host:port`, sends `HELLO` as a controller, and gets `HELLO_ACK` — which
    names the machine that was actually reached, taken from its own key rather than from anything the
    controller claimed, so a misconfigured address is visible in the log of the machine that was
@@ -206,16 +209,25 @@ viewed is itself a disclosure.
    field.
 5. The agent compares the key in constant time.
    - wrong `machine_id`, or a key that does not match, or no key at all → `ERROR` / `AuthFailed`
-   - match, but already serving → `ERROR` / `AgentBusy`
-   - match → `SESSION_OPENED`, and the agent starts capturing
-6. The connection stays up for the session, carrying `FRAME` messages one way and `INPUT_BATCH` the
-   other, and is closed by `CLOSE_SESSION` or by dropping the socket.
+   - the key is good, but the controller is on the agent's own machine → `ERROR` / `SelfConnection`
+   - the key is good and the controller is elsewhere → `ERROR` / `UnsupportedCapture`, and the peer
+     is dropped
+
+   Steps 5's second and third cases are where the flow stops today. There is no capture backend, so
+   the agent refuses rather than opening a session that would never produce a frame — a controller
+   waiting on a screen that will never arrive cannot tell "not implemented" from "broken", so the
+   agent says which it is. `AgentBusy` is reserved for a future agent that can be serving a
+   controller already, and nothing sends it yet.
+6. There is therefore no established session to describe. A working agent would hold the connection
+   open, carrying `FRAME` messages one way and `INPUT_BATCH` the other, and close it on
+   `CLOSE_SESSION` or by dropping the socket. None of that is written.
 
 `AGENT_HELLO`, `AGENT_HEARTBEAT` and `AGENT_STATS` exist in the format for an agent that announces
 itself to a registry. There is no registry, so nothing sends them; they stay in the type registry
 because removing a message type changes the wire format and the vectors, and a defined-but-unused
-type is not worth a format break. `NotFound` and `DuplicateEndpoint` are unused for the same reason
-and are covered by the vectors.
+type is not worth a format break. `NotFound`, `AgentBusy` and `DuplicateEndpoint` are unused error
+codes for the same reason, though unlike the message types they are **not** exercised by the vectors
+— only `BadMessage` and `AuthFailed` reach one, so those three are pinned by the format text alone.
 
 The id routes; the key authorises. They are the same object, which is why the id cannot be forged:
 a controller that knows a machine's id still cannot reach it without the key, and a controller that
@@ -293,7 +305,10 @@ every controller to be paired again.
 The agent will not start without a usable key, and says to run `keygen`. An agent that started without
 one would be an unauthenticated remote-control port, which is not a default worth shipping.
 
-The controller stores the key in the OS keychain (Windows Credential Manager, libsecret).
+The controller stores the key in the clear, in `config/remote-worker/endpoints.json`. The OS
+credential store is the intended home for it and is not built: each loader exposes a different
+mechanism (Windows Credential Manager, libsecret on Linux), so this is one of the two pieces most
+worth revisiting. Anyone who can read that file can view every machine listed in it.
 
 The agent storing the token **in the clear** rather than as a hash is the deliberate simplification
 here, and it is the piece most worth revisiting: someone who can read the agent's config can then
@@ -360,8 +375,12 @@ u16 code, string message
 ```
 
 Codes: 0 unspecified, 1 unsupported version, 2 auth failed, 3 not found, 4 bad message, 5 limit
-exceeded, 6 agent busy, 7 unsupported capture. `message` is for a human reading a log and is never
-parsed.
+exceeded, 6 agent busy, 7 unsupported capture, 8 duplicate endpoint, 9 self connection. `message` is
+for a human reading a log and is never parsed.
+
+The agent sends 2, 4, 7 and 9 today, and nothing else. 0, 1, 3, 5, 6 and 8 are reserved. Only 4 and 2
+are exercised by the vectors, so the other two codes the agent can actually emit — 7 and 9 — are
+pinned by this table and by `agent/tests/agent_test.cpp` rather than by the byte vectors.
 
 ### 5.3 `OPEN_SESSION` / `SESSION_OPENED` / `CLOSE_SESSION`
 
@@ -371,8 +390,9 @@ SESSION_OPENED   string session_id, u16 width, u16 height, u8 capture
 CLOSE_SESSION    u16 reason
 ```
 
-`quality` is a hint, not a command: 0 low, 1 medium, 2 high, 3 lossless. The agent's adaptive rate
-controller is free to disagree, and reports what it actually settled on in `CONFIG`.
+`quality` is a hint, not a command: 0 low, 1 medium, 2 high, 3 lossless. An agent with a capture
+backend would be free to disagree, and would report what it actually settled on in `CONFIG`. No
+capture backend and no rate controller exist yet, so nothing reads or writes that field today.
 
 `machine_id` is the id derived from the endpoint's key, and `credential` is that key — see
 section 3. The agent is the only party that checks it, so an empty one is a rejected credential
@@ -392,8 +412,9 @@ Windows endpoint is the case where capture may not be possible at all (see secti
 u32 id, u64 timestamp_micros
 ```
 
-Not decoration: the round trip is what the adaptive rate controller and the on-screen latency
-readout are computed from.
+Not decoration: the round trip is what an adaptive rate controller and an on-screen latency readout
+would be computed from. Neither exists yet. The mod's screen reports a status drawn from a fixed set
+— opened, no capture, refused, unreachable — and measures nothing.
 
 ### 5.5 `BYTES`
 
@@ -504,14 +525,17 @@ granted per-app and interactively.
 
 ### 6.2 Unattended endpoints
 
-`CAP_ATTRIB_LOCKED` claims the agent can capture a locked desktop. **This is unverified on
-Windows.** A process in session 1 capturing its own desktop is expected to get no frames once the
-workstation is locked, because that is the secure desktop; the alternative is an IddCx mirror
-driver, a signed kernel-adjacent driver and a much larger project.
+  `CAP_ATTRIB_LOCKED` claims the agent can capture a locked desktop. **This is unverified on
+  Windows.** A process in session 1 capturing its own desktop is expected to get no frames once the
+  workstation is locked, because that is the secure desktop; the alternative is an IddCx mirror
+  driver, a signed kernel-adjacent driver and a much larger project.
 
-The claim is therefore carried as a capability bit and asserted by the agent, rather than assumed
-by the controller. If the spike in M6 shows locked capture returns nothing, the bit goes away and
-unattended Windows is reported as unsupported instead of silently delivering a frozen picture.
+  The claim is therefore carried as a capability bit rather than assumed by the controller, and the
+  agent is meant to be the side that asserts it. Nothing sets it today: the agent has no capture
+  backend, so it never reaches the point of reporting capabilities, and every bit is currently zero
+  on the wire. If a first capture backend turns out to return nothing on a locked Windows desktop,
+  the bit goes away and unattended Windows is reported as unsupported instead of silently
+  delivering a frozen picture.
 
 ## 7. Versioning
 

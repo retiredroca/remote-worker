@@ -6,7 +6,7 @@ import java.util.Arrays;
  * Every message in the wire format, and the dispatcher.
  *
  * <p>One file on purpose: this is the protocol's schema in one readable place, and the C++ agent
- * and agent are written against it. Field order and width here are the same as the
+ * is written against it. Field order and width here are the same as the
  * {@code msg_*} builders in {@code tools/protocol_vectors.py}; the round-trip check compares
  * against those bytes, so the two cannot drift apart unnoticed.
  */
@@ -180,8 +180,8 @@ public final class Messages {
         public final int height;
         public final int quality;
         /**
-         * The token the agent minted for this controller. The agent is the only party that checks
-         * without reading it; only the named agent decides whether it is acceptable.
+         * The token the agent minted for this controller. Only the agent reads it, to decide whether
+         * this controller is acceptable; every other party treats it as opaque bytes.
          */
         public final byte[] credential;
 

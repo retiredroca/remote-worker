@@ -13,9 +13,14 @@ import net.minecraft.world.item.Item;
  * when the mod constructor returns -- registration happens later on the mod event bus. Reading the
  * registry at construction time on NeoForge therefore returns air.
  *
- * <p>So each loader registers and then returns a way to look the item up, and the lookup happens on
- * first use, by which point the registry is populated. Nothing downstream has to know which loader
- * it is running on, and none of it can hold the wrong instance.
+ * <p>So each loader registers and then returns a way to look the item up, and the lookup resolves
+ * only after the registry is populated. Nothing downstream has to know which loader it is running
+ * on, and none of it can hold the wrong instance.
+ *
+ * <p>At the moment only {@link #registerTablet} is called: the tablet is reached through the
+ * registry by the item id today, so the accessors below have no caller yet. They exist because the
+ * lazy supplier is the whole reason this class exists, and the first thing that wants a typed handle
+ * rather than a registry lookup is the renderer.
  */
 public final class RemoteWorkerItems {
 
