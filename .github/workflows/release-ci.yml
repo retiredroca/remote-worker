@@ -180,10 +180,14 @@ jobs:
         shell: bash
         run: rm -rf dist && mkdir -p dist
 
+      # merge-multiple, or the jars land in dist/release-jars/ and the verify step below finds
+      # zero of them in dist/. That is what the first green run of this workflow did: all three
+      # agent builds and ctest passed, and the release job failed on "expected 3 jars, found 0".
       - uses: actions/download-artifact@v4
         with:
           pattern: release-jars
           path: dist
+          merge-multiple: true
 
       # merge-multiple flattens the per-platform agent-* artifact directories into dist/. The
       # binary names are unique per platform, so nothing collides.

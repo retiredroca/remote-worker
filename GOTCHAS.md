@@ -614,3 +614,37 @@ nothing about a platform they never ran on. The MinGW `g++` on this machine is `
 so it compiles the `_WIN32` branch; the `#else` branch is not merely unverified, it is *unreachable*
 locally. Every guard in this project now has a runner that exercises it, and that runner is the only
 thing standing between "written to be portable" and "is portable".
+
+## `download-artifact` with `pattern` nests a directory, and the gate read an empty folder
+
+**Symptom.** The first fully-green run: all three agent builds passed *and* `ctest` passed on each,
+`jars` succeeded, and the `release` job failed with
+
+```
+expected 3 jars, found 0: []
+```
+
+from the verify step, on a run where every producer job had succeeded.
+
+**Check that proves it:**
+
+```bash
+# the verify step globs dist/*.jar; the download put them one level down
+ls dist/                    # -> release-jars/  agent-linux-x86_64/ ... (without merge-multiple)
+ls dist/release-jars/*.jar  # -> 3 files, present all along
+```
+
+**Cause.** `actions/download-artifact` with `pattern:` puts each artifact in a **subdirectory named
+after it**. Without `merge-multiple: true` the jars land in `dist/release-jars/` and a `dist/*.jar`
+glob finds nothing. The agent download had `merge-multiple: true` and the jar download did not,
+which is why the agent binaries were found and the jars were not — a difference with no visible
+cause in the workflow.
+
+**The rule.** When several `download-artifact` steps feed one directory, pin `merge-multiple: true`
+on **every** one of them. Do not rely on it being "obvious" for the second and forgotten on the
+first, and do not let the two steps differ: a missing flag is invisible until a step that depends on
+the layout runs, and the symptom is a count of zero with no artifact reported missing.
+
+**Why this one was not a bug in the gate.** The verify step said `found 0` and failed. That is the
+gate doing its job — it refused to publish a release it could not see the contents of, rather than
+publishing an empty one. The workflow was wrong, not the check.
