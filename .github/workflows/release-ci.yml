@@ -1,0 +1,258 @@
+# The release. This is the whole build, and it runs here rather than on a maintainer's machine.
+#
+# Why this project does not release the way its sibling projects do is recorded in GOTCHAS.md under
+# "This project releases differently from the other template projects": a native agent binary is
+# per-platform, and only a CI matrix has all the targets at once. The short version of the flow:
+#
+#   maintainer (signed, local)   bump the version, commit, `git tag -s`, push the tag
+#   this workflow (on the tag)   build the jars + one native agent per platform, test, publish
+#
+# The tag is the hand-off. It is created and signed on the maintainer's machine precisely so the
+# private key never has to exist in CI. CI only builds what that tag already names, and the version
+# it reads from versions.properties is the one the maintainer committed -- never re-stamped here,
+# because a second clock read could disagree with the committed one.
+#
+# The release MUST carry the jars AND one agent binary per platform in the `agent` matrix below. A
+# release missing one is a hard failure, not a warning: the jar count is right and the build is
+# green either way, so a missing binary is invisible until someone goes looking for it. The
+# "Verify release contents" step is the point of this file -- keep it in step with the matrix.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Rebuild/republish an existing release (e.g. a runner was briefly down). The tag is not
+  # re-created and nothing is re-bumped; it just rebuilds the same version.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to rebuild, e.g. v1.0.0.26092811'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  MC_VERSION: '1.21.1'
+  # The tag under build. On a push this is the ref name; on a re-run it is the input. Referenced as
+  # ${{ env.RELEASE_TAG }} below.
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  # --- the native agent, one job per platform, each built natively ----------------------------
+  agent:
+    name: agent (${{ matrix.agent.name }})
+    runs-on: ${{ matrix.agent.os }}
+    strategy:
+      # Every platform must succeed for a release. A platform that fails to build or fails ctest
+      # stops the release rather than shipping a partial set -- a user on that platform would
+      # otherwise find a release that appears to support them and contains nothing for them.
+      fail-fast: false
+      matrix:
+        agent:
+          - { name: linux-x86_64,   os: ubuntu-latest,  ext: '' }
+          - { name: windows-x86_64, os: windows-latest, ext: '.exe' }
+          - { name: macos-arm64,    os: macos-14,       ext: '' }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      # The CMake build regenerates the wire-format vectors and runs them against the C++ codec, so
+      # it needs a Python interpreter. Every hosted runner has one, but Windows names it `python`,
+      # and CMake's find_package should not have to guess. Pin it.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build and test the agent
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-cpp -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build-cpp --config RelWithDebInfo
+          ctest --test-dir build-cpp -C RelWithDebInfo --output-on-failure
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python3 -c "import sys; sys.path.insert(0,'tools'); import release; print(release.read_props(release.VERSIONS)['remote-worker'])")
+          name="remote-worker-${version}-${{ matrix.agent.name }}${{ matrix.agent.ext }}"
+          # The binary is staged next to the build with a fixed name, but find it rather than
+          # hardcode the path: a multi-config generator nests it under bin/<Config>/.
+          binary=$(find build-cpp/staged -type f -name "remote-worker${{ matrix.agent.ext }}" | head -1)
+          if [ -z "$binary" ]; then
+            echo "no remote-worker${{ matrix.agent.ext }} under build-cpp/staged" >&2
+            find build-cpp -name 'remote-worker*' >&2 || true
+            exit 1
+          fi
+          mkdir -p out
+          cp "$binary" "out/$name"
+          chmod +x "out/$name" || true
+          echo "packaged $name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-${{ matrix.agent.name }}
+          path: out/remote-worker-*
+          if-no-files-found: error
+          retention-days: 1
+
+  # --- the mod jars: pure Java, on ubuntu only -------------------------------------------------
+  jars:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Resolve java version
+        run: |
+          set -euo pipefail
+          java_ver=$(grep -E '^java_version=' "versions/${MC_VERSION}/version.properties" | head -1 | cut -d= -f2 | tr -d '\r')
+          echo "JAVA_VERSION=${java_ver:-21}" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Prepare
+        run: |
+          find . -name gradle.properties -not -path '*/build/*' -exec sed -i '/org.gradle.java.home/d' {} +
+          chmod +x ./gradlew
+
+      # -PskipCpp=true: the agent is built by the matrix above. Without it this job would also run
+      # cmake on ubuntu, duplicating the linux build and making the jar job depend on a C++
+      # toolchain it does not need. The matrix is the only place the agent is built.
+      - name: Build loader jars
+        run: ./gradlew --no-daemon -Pmc=${MC_VERSION} -PskipCpp=true --refresh-dependencies releaseLoaderJars
+
+      - name: Build loader bundles
+        run: ./gradlew --no-daemon -Pmc=${MC_VERSION} -PskipCpp=true releaseLoaderBundles
+
+      - name: Build universal jars
+        run: ./gradlew --no-daemon -Pmc=${MC_VERSION} -PskipCpp=true releaseUniversal
+
+      - name: Build universal bundles + union
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon -Pmc=${MC_VERSION} -PskipCpp=true releaseUniversalBundles releaseJars
+          rm -rf dist
+          mkdir -p dist
+          cp build/release/*.jar dist/
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-jars
+          path: dist/*.jar
+          if-no-files-found: error
+          retention-days: 1
+
+  # --- the release itself -----------------------------------------------------------------------
+  release:
+    needs: [jars, agent]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Prepare dist
+        run: rm -rf dist && mkdir -p dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-jars
+          path: dist
+
+      # merge-multiple flattens the per-platform agent-* artifact directories into dist/. The
+      # binary names are unique per platform, so nothing collides.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: agent-*
+          path: dist
+          merge-multiple: true
+
+      # The point of this step. A jar-count check cannot see a missing binary, and a release with
+      # no agent looks exactly like a good one. The platform list must match the agent matrix.
+      - name: Verify release contents
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys, pathlib
+          sys.path.insert(0, 'tools')
+          import release
+
+          dist = pathlib.Path('dist')
+          version = release.read_props(release.VERSIONS)['remote-worker']
+          expected_jars = release.expected_jars(release.os.environ.get('MC_VERSION', '1.21.1'))
+
+          jars = sorted(dist.glob('*.jar'))
+          if len(jars) != expected_jars:
+              sys.exit(f'expected {expected_jars} jars, found {len(jars)}: {[j.name for j in jars]}')
+          bad = [j.name for j in jars if not release.ALLOWED_JAR.match(j.name)]
+          if bad:
+              sys.exit(f'unexpected jar names: {bad}')
+
+          platforms = ['linux-x86_64', 'windows-x86_64', 'macos-arm64']
+          present = {p.name for p in dist.iterdir() if p.is_file() and not p.name.endswith('.jar')}
+
+          matched = {}
+          for plat in platforms:
+              stem = f'remote-worker-{version}-{plat}'
+              # Windows gets .exe, the others do not; exactly one variant must be present.
+              hits = [n for n in (stem, stem + '.exe') if n in present]
+              if len(hits) != 1:
+                  sys.exit(f'expected exactly one agent binary for {plat}, found {hits}')
+              matched[hits[0]] = plat
+
+          extras = present - set(matched)
+          if extras:
+              sys.exit(f'unexpected non-jar file(s) in the release: {sorted(extras)}')
+
+          print(f'release set OK ({len(jars)} jars + {len(matched)} agent binaries)')
+          for name in sorted(matched):
+              print(f'  {name}  ({(dist / name).stat().st_size} bytes)')
+          PY
+
+      # softprops/action-gh-release, not the `gh` CLI: it creates the release and uploads every
+      # asset over the GitHub API, so no CLI has to be installed on the runner. `dist/*` is the
+      # whole release and the verify step above has already guaranteed its exact contents.
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          # Turns "the glob matched nothing" into a failure. Without it a release can be published
+          # with a typo in a path and zero assets, silently.
+          fail_on_unmatched_files: true
+          files: dist/*
+
+      # CurseForge/Modrinth get the universal jar only -- never the .exe. fail-mode: warn: this
+      # project is not configured for either yet, and a platform-publish failure must not
+      # invalidate an otherwise-good GitHub release.
+      - name: Publish to CurseForge and Modrinth
+        uses: Kir-Antipov/mc-publish@v3.3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-tag: ${{ env.RELEASE_TAG }}
+          modrinth-id: ${{ vars.MODRINTH_ID }}
+          modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
+          modrinth-files: dist/remote-worker-*-universal.jar
+          curseforge-id: ${{ vars.CURSEFORGE_PROJECT_ID }}
+          curseforge-token: ${{ secrets.CURSEFORGE_API_KEY }}
+          curseforge-files: dist/remote-worker-*-universal.jar
+          name: remote-worker
+          version: ${{ env.RELEASE_TAG }}
+          version-type: release
+          game-versions: ${{ env.MC_VERSION }}
+          loaders: fabric,neoforge
+          fail-mode: warn

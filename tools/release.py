@@ -531,6 +531,12 @@ def main():
     ap.add_argument("--skip-build", action="store_true", help="reuse the existing dist/")
     ap.add_argument("--no-daemon", action="store_true",
                     help="do not reuse a Gradle daemon (slower; reproduces a CI-like cold build)")
+    ap.add_argument("--ci", action="store_true",
+                    help="bump, commit, sign and push a tag, then stop: the release workflow "
+                         "(.github/workflows/release-ci.yml) triggered by the tag builds the jars and "
+                         "one native agent per platform, tests them, and creates the GitHub release. "
+                         "This is the release path for this project, because a local build can only "
+                         "ever produce the host platform's agent binary.")
     ap.add_argument("--local-only", action="store_true",
                     help="build and stage the jars locally only: no commit, tag, push, GitHub release "
                          "or platform/CI publishing. versions.properties is still bumped so the local "
@@ -577,12 +583,18 @@ def main():
     tag = args.tag or versioning.tag(versions[primary], stamp)
     log(f"tag: {tag}")
 
-    if not args.skip_build:
+    # In --ci mode nothing is built here: the tag is the hand-off, and the workflow triggered by
+    # the tag builds the jars and one native agent per platform. Building locally would only ever
+    # produce the host platform's binary, which is the whole reason the build moved to CI.
+    if args.ci:
+        pass  # deliberately no build, no collect, no verify
+    elif not args.skip_build:
         build(mc, dry, args.no_daemon, stamp)
         collect(mc, dry)
     else:
         verify(mc, dry)
-    changelog(tag, dry)
+    if not args.ci:
+        changelog(tag, dry)
 
     if args.local_only:
         log(f"local-only: built the {tag} jars into build/release/ and dist/")
@@ -600,6 +612,17 @@ def main():
     tag_release(tag, f"Release {tag}", sign, dry)
     if not args.no_push and slug:
         run(["git", "push", "origin", tag], dry=dry)
+
+    # --ci: the signed tag is pushed, and the workflow it triggers does everything else. Returning
+    # here is what keeps the local script from building a host-only binary or creating a jar-only
+    # GitHub release behind the workflow's back.
+    if args.ci:
+        if not slug:
+            die("--ci needs a GitHub remote: the tag push is what triggers the release workflow")
+        log(f"pushed the signed tag {tag}; .github/workflows/release-ci.yml builds and publishes it")
+        log("  jars + one agent binary per platform are built and tested on CI, then released")
+        log(f"  watch it here: https://github.com/{slug}/actions")
+        return
 
     if not slug:
         log("no 'origin' GitHub remote; release is local only (committed + tagged, not pushed)")

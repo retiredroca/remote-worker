@@ -494,3 +494,31 @@ that insisted it was a different machine, with no obvious cause.
 an executable. It worked in testing only because a temp directory already existed. Replaced with
 `std::filesystem::create_directories`, which creates intermediate directories on both platforms and
 takes an `error_code` instead of failing the process.
+
+## This project releases differently from the other template projects (by design)
+
+**Scope/date:** decided 2026-09-28, before the first CI-built release. The other projects built from
+this template release entirely from one machine and used CI only to copy jars to CurseForge/Modrinth.
+This one does not, and the difference is deliberate.
+
+- **What is different.** Every other project is pure Java: the jars are platform-independent, so the
+  machine you release from produces the same bytes as any other, and a local release is complete.
+  This project also ships `remote-worker`, a **native C++ endpoint agent**, and a native binary is
+  per-platform by definition. A local release can only ever produce the host platform's binary, so a
+  "release from here" would ship Windows-only (or Linux-only) and look successful doing it.
+
+- **Why the build moves to CI.** GitHub's hosted runners are the only place all three targets exist
+  at once: `ubuntu-latest`, `macos-latest`, `windows-latest`. A CI matrix builds each natively. A
+  local machine -- even with a WSL distro and a cross-compiler -- cannot produce a macOS binary at
+  all, and producing Linux on the side would mean two of the three binaries come from a different
+  toolchain than the third. So: **all building happens in CI**; the local script no longer builds.
+
+- **The rule this implies.** Do not "fix" a divergence from the template's release flow by copying
+  the template's flow back. The template assumes one artifact shape for every project; this one has
+  two, and only CI can produce the second. When a release step is added here, ask whether it needs
+  the agent binary before copying a step from a sibling project.
+
+- **What still has to be true of every release,** because it is what made the omission invisible
+  before: the release must carry the jars *and* one agent binary per supported platform, and a
+  missing one is a hard failure rather than a warning. See "The staged binary was deleted by its own
+  Sync" above for the version of this that shipped a release with no binary and reported success.

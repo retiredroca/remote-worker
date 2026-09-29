@@ -161,6 +161,13 @@ def cppBuildDir = layout.buildDirectory.dir('cpp')
 def cppStaged = cppBuildDir.map { it.dir('staged') }
 def cppSource = file('CMakeLists.txt')
 
+// -PskipCpp=true turns every C++ task into a no-op. The CI release runs the pure-Java jar build on
+// ubuntu and the native agent in a separate platform matrix (see release-ci.yml); without this the
+// jar job would also invoke cmake on ubuntu, duplicating the linux agent build and, worse, making
+// the jar job depend on a C++ toolchain and a POSIX socket path it does not otherwise need. The
+// matrix is the single place the agent is built; the jar job stays Java-only.
+def skipCpp = (project.findProperty('skipCpp') ?: 'false').toString().toBoolean()
+
 // The version the binaries ship as: the stamped version of the module that owns the release, so the
 // binary and the jars in one release always carry the same number. A single-module project has one
 // answer; a multi-module project needs this pointed at whichever module owns the release.
@@ -187,7 +194,7 @@ def cmakeConfigure = tasks.register('cmakeConfigure', Exec) {
     // Re-running configure on every build is slow and, with some generators, prompts. Skip it when
     // the build directory is already there and the inputs have not moved.
     onlyIf {
-        !cppBuildDir.get().asFile.isDirectory()
+        !skipCpp && !cppBuildDir.get().asFile.isDirectory()
     }
 }
 
@@ -197,6 +204,7 @@ def cppBuild = tasks.register('cppBuild', Exec) {
     inputs.dir file('relay')
     outputs.dir cppStaged
     commandLine 'cmake', '--build', cppBuildDir.get().asFile.absolutePath, '--config', 'Release'
+    onlyIf { !skipCpp }
 }
 
 // Copies the built binary into build/release/ under its release name, so everything the release
@@ -225,6 +233,7 @@ def stageCppBinaries = tasks.register('stageCppBinaries', Copy) {
     // Naming the file means a stale artifact cannot be published, and a missing one is a build
     // failure rather than a silent omission.
     include cppBinaryName
+    onlyIf { !skipCpp }
     // Clear any other staged binary of ours first. releaseJars is a Sync and would do this, but
     // Gradle skips an up-to-date Sync, so a file left by an earlier build (or an earlier name for
     // this one) can survive a green build and be published. Copy adds and never removes, so the

@@ -31,6 +31,19 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # This project has a native agent binary, so the whole build moved to release-ci.yml, which
+      # is triggered by a signed tag and builds the jars plus one agent per platform. Its `build`
+      # mode would create a release containing ONLY the jars -- a release that looks successful
+      # and has no agent in it. Refuse it rather than let that happen. See GOTCHAS.md, "This
+      # project releases differently from the other template projects".
+      - name: Refuse build mode
+        if: ${{ inputs.mode == 'build' }}
+        run: |
+          echo "build mode is disabled for this project." >&2
+          echo "The release is built by .github/workflows/release-ci.yml from a signed tag." >&2
+          echo "Create one with: python tools/release.py --mod all --ci" >&2
+          exit 1
+
       - uses: actions/checkout@v5
         with:
           # build mode: the triggering commit. publish mode: the released tag (so versions.properties
