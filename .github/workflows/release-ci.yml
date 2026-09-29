@@ -200,11 +200,12 @@ jobs:
       # The point of this step. A jar-count check cannot see a missing binary, and a release with
       # no agent looks exactly like a good one. The platform list must match the agent matrix.
       - name: Verify release contents
+        id: verify
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import sys, pathlib
+          import os, sys, pathlib
           sys.path.insert(0, 'tools')
           import release
 
@@ -238,6 +239,13 @@ jobs:
           print(f'release set OK ({len(jars)} jars + {len(matched)} agent binaries)')
           for name in sorted(matched):
               print(f'  {name}  ({(dist / name).stat().st_size} bytes)')
+          # Publish the approved list for the upload step. The upload must send exactly what
+          # was verified, so deriving it here rather than re-globbing in the next step keeps the
+          # platform names in one place: a new platform cannot be checked on one step and then
+          # silently not uploaded on the other.
+          approved = ['dist/' + j.name for j in jars] + ['dist/' + n for n in sorted(matched)]
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+              out.write('files<<RWEOF' + chr(10) + chr(10).join(approved) + chr(10) + 'RWEOF' + chr(10))
           PY
 
       # softprops/action-gh-release, not the `gh` CLI: it creates the release and uploads every
@@ -252,7 +260,7 @@ jobs:
           # Turns "the glob matched nothing" into a failure. Without it a release can be published
           # with a typo in a path and zero assets, silently.
           fail_on_unmatched_files: true
-          files: dist/*
+          files: ${{ steps.verify.outputs.files }}
 
       # CurseForge/Modrinth get the universal jar only -- never the .exe. fail-mode: warn: this
       # project is not configured for either yet, and a platform-publish failure must not

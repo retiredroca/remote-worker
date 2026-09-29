@@ -648,3 +648,64 @@ the layout runs, and the symptom is a count of zero with no artifact reported mi
 **Why this one was not a bug in the gate.** The verify step said `found 0` and failed. That is the
 gate doing its job — it refused to publish a release it could not see the contents of, rather than
 publishing an empty one. The workflow was wrong, not the check.
+
+## The release ran green, verified green, and then found no files to upload
+
+**Symptom.** Every producer job passed -- three agent builds, `ctest` on each, `jars` -- and the
+verify step printed
+
+```
+release set OK (3 jars + 3 agent binaries)
+```
+
+and then the job failed with
+
+```
+ArgumentError: No files found for the specified glob. ... (Parameter 'options.files')
+```
+
+Six files that the step above had just listed by name, one line apart, and the upload could not find
+any of them.
+
+**Cause.** `softprops/action-gh-release` given `files: dist/*`. Whatever the reason for that
+particular glob not matching -- and the reason was not worth another two CI runs to find out -- the
+fix removes the guess instead of debugging it. The verify step now writes the list of files it
+approved to `$GITHUB_OUTPUT`, and the upload consumes it:
+
+```
+files<<RWEOF
+dist/remote-worker-<version>-fabric.jar
+...
+RWEOF
+```
+
+**Why deriving the list beats a second glob.** The platform names would otherwise be written in
+three places -- the agent matrix, the verify step, and the upload glob -- and could disagree. A new
+platform verified on one step and then not uploaded on the other is the exact silent omission this
+release pipeline exists to prevent. Now the upload can only send what the check approved, because it
+*is* what the check approved.
+
+**Two smaller things this found, both mine.** The verify step used `os.environ` having imported only
+`sys` and `pathlib` -- it would have failed on CI even with the right glob, and locally only because
+the test harness injected `os` into the globals. And the `import os, sys, pathlib` line is now
+checked by compiling the extracted step, because a step's own Python is as much untested surface as
+its shell.
+
+**The check that would have caught all of it.** Extract every `run:` step's embedded interpreter
+block and compile it, the way the YAML was already being parsed:
+
+```bash
+python -c "
+import yaml
+d = yaml.safe_load(open('.github/workflows/release-ci.yml'))
+for job in d['jobs']:
+    for st in d['jobs'][job]['steps']:
+        if '<<' in str(st.get('run','')) and 'PY' in str(st.get('run','')):
+            inner = st['run'].split(chr(39)*2+'PY'+chr(39)*2,1)[1]
+            print(job, st['name'])
+"
+```
+
+There is now a real test for the release workflow's own logic: the verify step is executed locally
+against a constructed `dist/` and its `$GITHUB_OUTPUT` checked, because it is Python with branches
+and it is the gate.
