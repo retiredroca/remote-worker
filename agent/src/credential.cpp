@@ -233,9 +233,8 @@ bool KeyStore::store(const std::string& key_text, std::string* error) const {
     // ACL, which is the normal protection there and is not something to fake with a mode bit.
     //
     // ::chmod, not std::chmod. <sys/stat.h> declares the POSIX spelling, and libstdc++ does not
-    // provide the std:: one -- GCC's own diagnostic is "did you mean 'chmod'?". This never showed
-    // up locally because the whole call is inside #ifndef _WIN32 and the local toolchain is
-    # MSVC, which does not compile this branch at all.
+    // provide the std:: one; GCC's own diagnostic is "did you mean 'chmod'?". This never showed up
+    // locally because the whole call is inside a branch the MSVC toolchain never compiles.
     ::chmod(path_.c_str(), S_IRUSR | S_IWUSR);
 #endif
     return true;
