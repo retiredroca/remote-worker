@@ -41,8 +41,8 @@ enum class Type : uint8_t {
     AgentStats = 0x32,
 };
 
-// Unknown is a relay-side state before HELLO, not a wire value; the other two are the
-// values that appear in HELLO.role.
+// Unknown is a local state before HELLO has been read, not a wire value; the other two are the
+// values that appear in HELLO.role. The agent only ever speaks to a Controller, and says so.
 enum class Role : uint8_t { Unknown = 0, Controller = 1, Agent = 2 };
 enum class ErrorCode : uint16_t {
     Unspecified = 0,
@@ -124,7 +124,7 @@ struct OpenSession {
     uint16_t width = 0;
     uint16_t height = 0;
     uint8_t quality = 0;
-    // The token the agent minted for this controller. Opaque to the relay, which forwards it
+    // The token the agent minted for this controller. Opaque to anything but the agent, which
     // without reading it; only the named agent decides whether it is acceptable.
     std::vector<uint8_t> credential;
 };
@@ -150,7 +150,7 @@ struct Pong {
     uint64_t micros = 0;
 };
 
-// Opaque to the relay, which forwards it without reading it. Carries the end-to-end session.
+// Carries the end-to-end session between a controller and an agent.
 struct BytePayload {
     std::vector<uint8_t> payload;
 };
@@ -207,7 +207,7 @@ struct AgentHello {
     // Derived from the agent's key, and what peers address this machine by.
     std::string machineId;
     // Free text for the user interface. May repeat between endpoints, and nothing looks a machine up
-    // by it -- the relay's registry is keyed on machineId, so two machines may both be called
+    // by it -- an id is derived from a key, so two machines are both called
     // "DESKTOP-EXAMPLE" without colliding.
     std::string label;
     uint8_t os = 0;

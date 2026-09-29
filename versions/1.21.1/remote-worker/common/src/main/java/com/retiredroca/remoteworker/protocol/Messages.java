@@ -6,7 +6,7 @@ import java.util.Arrays;
  * Every message in the wire format, and the dispatcher.
  *
  * <p>One file on purpose: this is the protocol's schema in one readable place, and the C++ agent
- * and relay are written against it. Field order and width here are the same as the
+ * and agent are written against it. Field order and width here are the same as the
  * {@code msg_*} builders in {@code tools/protocol_vectors.py}; the round-trip check compares
  * against those bytes, so the two cannot drift apart unnoticed.
  */
@@ -180,7 +180,7 @@ public final class Messages {
         public final int height;
         public final int quality;
         /**
-         * The token the agent minted for this controller. Opaque to the relay, which forwards it
+         * The token the agent minted for this controller. The agent is the only party that checks
          * without reading it; only the named agent decides whether it is acceptable.
          */
         public final byte[] credential;
@@ -374,9 +374,9 @@ public final class Messages {
     }
 
     /**
-     * An opaque run, forwarded by the relay without reading it.
+     * An opaque run: carried, length-checked, not interpreted.
      *
-     * <p>This carries the end-to-end session between controller and agent, so the relay can route
+     * <p>This carries the end-to-end session between controller and agent, so the receiver can route
      * and meter a connection it cannot decrypt. See PROTOCOL.md section 3.
      */
     public static final class BytePayload implements Message {
@@ -711,7 +711,7 @@ public final class Messages {
         public final String machineId;
         /**
          * Free text for the user interface. May repeat between endpoints, and nothing looks a machine
-         * up by it: the relay's registry is keyed on machineId, so two machines may both be called
+         * up by it: an id is derived from a key, so two machines are both called
          * "DESKTOP-EXAMPLE" without colliding.
          */
         public final String label;

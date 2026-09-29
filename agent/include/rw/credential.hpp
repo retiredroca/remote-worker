@@ -1,8 +1,8 @@
 // Endpoint credentials: the token an agent mints to say "this controller may watch me".
 //
 // The agent generates a token, shows it once, and remembers it. The mod holds the same token and
-// presents it on OPEN_SESSION. The *agent* is what checks it -- the relay never sees a key, so a
-// compromised relay cannot mint one for itself. See PROTOCOL.md 3.
+// presents it on OPEN_SESSION. The *agent* is the only thing that checks it, so no other process
+// ever holds a key it could replay. See PROTOCOL.md 3.
 //
 // Symmetric, deliberately. A keypair (the agent holding the private half, the mod showing the public
 // one) would let a controller be added without ever showing a secret, but Ed25519 verification is
@@ -59,10 +59,10 @@ bool constant_time_equals(std::span<const uint8_t> a, std::span<const uint8_t> b
 // 160 bits of uniform randomness from the system CSPRNG, over which FNV behaves like a random
 // function -- its weakness is with structured or adversarial inputs, not uniform ones. What the
 // 64-bit output buys is that two machines colliding is astronomically unlikely at any realistic
-// fleet size (about 3e-14 at a thousand machines), and if it did happen the relay refuses the second
-// registration with DuplicateEndpoint, so a collision denies a machine rather than merging two
-// silently. The right upgrade is a real hash, which needs the crypto dependency this project has
-// deliberately not taken.
+// fleet size (about 3e-14 at a thousand machines). If a collision ever did happen the consequence
+// is that two machines cannot both be reached under one id, which is a failure rather than a
+// security hole. The right upgrade is a real hash, which needs the crypto dependency this project
+// has deliberately not taken.
 std::string machine_id(std::span<const uint8_t> key);
 inline std::string machine_id(const std::string& key_text) {
     // Always from the decoded bytes, so a machine has exactly one id however the key was obtained.

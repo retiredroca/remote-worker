@@ -3,7 +3,7 @@
 
 This script is the **normative encoder** for the protocol described in `PROTOCOL.md`.
 Nothing else is allowed to be the definition: the Java codec under
-`versions/<mc>/<module>/common/` and the C++ agent/relay both have to agree with the bytes
+`versions/<mc>/<module>/common/` and the C++ agent both have to agree with the bytes
 produced here, and `ProtocolVectorsCheck` fails the build when they do not. That is why the
 format is hand-rolled and the vectors are generated rather than coming from a Protobuf schema:
 with one authoritative encoder, "the two implementations disagree" becomes a test failure
@@ -37,8 +37,8 @@ HEADER_SIZE = 8
 # --- type registry ---------------------------------------------------------------------------------
 # Grouped into ranges by category, so a message can be added later without renumbering its siblings.
 #   0x00-0x0F  session and connection
-#   0x10-0x1F  media      (agent -> controller, relayed)
-#   0x20-0x2F  input      (controller -> agent, relayed)
+#   0x10-0x1F  media      (agent -> controller)
+#   0x20-0x2F  input      (controller -> agent)
 #   0x30-0x3F  agent control and telemetry
 HELLO = 0x01
 HELLO_ACK = 0x02
@@ -280,8 +280,7 @@ def msg_open_session(machine_id=MACHINE_ID, width=1920, height=1080, quality=QUA
     p.u16(width)
     p.u16(height)
     p.u8(quality)
-    # The token the agent minted for this controller. Opaque here: the relay forwards it without
-    # reading it and the agent is the only thing that checks it, so the relay holds no keys.
+    # The token the agent minted for this controller. The agent is the only party that checks it.
     p.bytes_field(credential)
     return frame(OPEN_SESSION, bytes(p.buf))
 
@@ -605,7 +604,7 @@ def _frame_with_rects(tail, rect_count):
 
 
 def _agent_hello_invalid_utf8():
-    """AGENT_HELLO whose agent_id is a lone continuation byte followed by an ASCII 'a'.
+    """AGENT_HELLO whose machine_id is a lone continuation byte followed by an ASCII 'a'.
 
     0x80 is a UTF-8 continuation byte with no lead byte before it, so the sequence cannot be
     decoded. A lenient decoder turns it into U+FFFD and keeps going.

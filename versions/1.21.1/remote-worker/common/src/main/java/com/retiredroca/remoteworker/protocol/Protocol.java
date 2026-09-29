@@ -36,8 +36,8 @@ public final class Protocol {
     // --- type registry -------------------------------------------------------------------------
     // Grouped into ranges by category so a message can be added later without renumbering siblings.
     //   0x00-0x0F  session and connection
-    //   0x10-0x1F  media      (agent -> controller, relayed)
-    //   0x20-0x2F  input      (controller -> agent, relayed)
+    //   0x10-0x1F  media      (agent -> controller)
+    //   0x20-0x2F  input      (controller -> agent)
     //   0x30-0x3F  agent control and telemetry
     public static final int TYPE_HELLO = 0x01;
     public static final int TYPE_HELLO_ACK = 0x02;

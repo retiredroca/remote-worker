@@ -151,7 +151,7 @@ tasks.register('publishLibrary') {
     }
 }
 
-// The C++ relay and (later) the agent, built by CMake rather than Gradle.
+// The C++ endpoint agent, built by CMake rather than Gradle.
 //
 // Two build systems now, so this is where the hand-off happens and where the release artifact is
 // NAMED. Naming lives here rather than in CMake deliberately: the name has to carry the version
@@ -185,9 +185,9 @@ def hostPlatform = {
 }()
 
 def cmakeConfigure = tasks.register('cmakeConfigure', Exec) {
-    description = 'Configures the CMake build for the relay and agent.'
+    description = 'Configures the CMake build for the agent.'
     inputs.file cppSource
-    inputs.dir file('relay')
+    inputs.dir file('agent')
     outputs.dir cppBuildDir
     commandLine 'cmake', '-S', projectDir.absolutePath, '-B', cppBuildDir.get().asFile.absolutePath,
             '-DCMAKE_BUILD_TYPE=Release'
@@ -199,9 +199,9 @@ def cmakeConfigure = tasks.register('cmakeConfigure', Exec) {
 }
 
 def cppBuild = tasks.register('cppBuild', Exec) {
-    description = 'Builds the C++ relay (and the agent, once it exists).'
+    description = 'Builds the C++ endpoint agent.'
     dependsOn cmakeConfigure
-    inputs.dir file('relay')
+    inputs.dir file('agent')
     outputs.dir cppStaged
     commandLine 'cmake', '--build', cppBuildDir.get().asFile.absolutePath, '--config', 'Release'
     onlyIf { !skipCpp }

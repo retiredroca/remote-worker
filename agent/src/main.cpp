@@ -5,12 +5,9 @@
 //
 //   remote-worker agent    run the endpoint agent (this is what goes on the remote machine)
 //   remote-worker keygen   mint a key for a machine and print it, along with its machine id
-//   remote-worker relay    the LAN relay, still here while controllers connect to agents directly
 //
-// The agent is the only thing that needs to run on the remote system. The relay is on the
-// controller's side and is being retired: a controller can hold a list of endpoints and connect to
-// them directly, so it does not need a separate program in the middle.
-#include <chrono>
+// The agent is the only thing that runs on a remote system. A controller holds a list of endpoints
+// and connects to each agent directly, so there is no separate program in the middle.
 #include <csignal>
 #include <cstring>
 #include <iostream>
@@ -19,7 +16,6 @@
 
 #include "rw/agent.hpp"
 #include "rw/credential.hpp"
-#include "rw/relay.hpp"
 
 namespace {
 
@@ -34,9 +30,7 @@ void usage() {
               << "  agent  [--bind <addr>] [--port <n>] [--key-file <path>]\n"
               << "         Serve one controller, on the machine being watched.\n"
               << "  keygen [--key-file <path>] [--rotate]\n"
-              << "         Mint a key for this machine and print it once, with its machine id.\n"
-              << "  relay  [--bind <addr>] [--port <n>]\n"
-              << "         The LAN relay. Being retired; controllers talk to agents directly.\n";
+              << "         Mint a key for this machine and print it once, with its machine id.\n";
 }
 
 // Matches "--flag value" and "--flag=value".
@@ -156,42 +150,6 @@ int command_agent(int argc, char** argv) {
     std::cout << "\nstopping\n";
     return 0;
 }
-
-int command_relay(int argc, char** argv) {
-    rw::RelayOptions options;
-    for (int i = 2; i < argc; i++) {
-        std::string arg = argv[i];
-        std::string value;
-        bool consume_next = false;
-        if (take(arg, "--bind", &value, &consume_next) && consume_next) {
-            options.bindAddress = require_value(arg, "--bind", value, &i, argc, argv);
-        } else if (take(arg, "--port", &value, &consume_next) && consume_next) {
-            options.port = static_cast<uint16_t>(std::stoi(
-                require_value(arg, "--port", value, &i, argc, argv)));
-        } else if (arg == "--allow-unauthenticated-lan") {
-            options.allowUnauthenticatedLan = true;
-        } else if (arg == "--quiet") {
-            options.verbose = false;
-        } else {
-            std::cerr << "error: relay does not take " << arg << "\n";
-            return 2;
-        }
-    }
-    std::string error;
-    rw::Relay relay(options);
-    if (!relay.start(&error)) {
-        std::cerr << "error: " << error << "\n";
-        return 1;
-    }
-    std::signal(SIGINT, on_signal);
-    std::signal(SIGTERM, on_signal);
-    while (g_stop == 0) {
-        relay.run_once(50);
-    }
-    relay.stop();
-    return 0;
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -203,7 +161,6 @@ int main(int argc, char** argv) {
     try {
         if (command == "keygen") return command_keygen(argc, argv);
         if (command == "agent") return command_agent(argc, argv);
-        if (command == "relay") return command_relay(argc, argv);
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << "\n";
         return 1;

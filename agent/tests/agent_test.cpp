@@ -1,7 +1,8 @@
 // Tests the endpoint agent against a real controller peer over loopback.
 //
-// The agent is where authentication now happens: with the relay retired there is nothing in front
-// of it, so a bug here is a bug in the only thing standing between a LAN host and a session. The
+// The agent is where authentication happens -- a controller connects straight to it, so there is
+// nothing in front of it and a bug here is a bug in the only thing standing between a LAN host and
+// a session. The
 // test therefore drives the actual socket and the actual codec rather than calling the handler, and
 // it writes a real key file so the agent's own "read my key" path is what is under test.
 #include <cstdio>

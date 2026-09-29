@@ -15,7 +15,7 @@ multi-version template.
 
 ## The agent (C++)
 
-The endpoint agent is C++20 under `relay/`, built with CMake and deliberately outside `versions/` so
+The endpoint agent is C++20 under `agent/`, built with CMake and deliberately outside `versions/` so
 the Gradle composite never sees it. It builds as one binary with subcommands:
 
 ```bash
@@ -31,11 +31,11 @@ ctest --test-dir build-cpp -C RelWithDebInfo --output-on-failure
 ```
 
 `ctest` runs four things: the same wire-format vectors the Java check uses against the C++ codec, a
-credentials test, the retired relay's end-to-end test, and an agent test that drives a real
-controller peer over loopback and asserts what the agent accepts and refuses.
+credentials test, and an agent test that drives a real controller peer over loopback and asserts
+what the agent accepts and refuses.
 
-**There is no relay in the product.** A controller holds a list of endpoints and connects to each one
-directly. `remote-worker relay` still exists and is still tested, and nothing ships it.
+**The agent is the whole product.** A controller holds a list of endpoints and connects to each agent
+directly; there is no relay and no discovery — an endpoint is configured, not found.
 
 **There is no transport encryption.** Anything watching the wire can read the frames, and the agent
 has no transport authentication, so it announces its machine id to anything that connects to the
@@ -57,7 +57,7 @@ has the reasoning in full.
 > ever contained one. Treat the commands as a starting point to try, not as instructions known to
 > work.
 
-The source is written to compile on both: `stream.cpp`, `agent.cpp`, `relay.cpp` and
+The source is written to compile on both: `stream.cpp`, `agent.cpp` and
 `credential.cpp` guard their platform sections with `_WIN32`, `generate_token()` reads
 `/dev/urandom` off Windows, and the key file defaults to `$HOME/.config/remote-worker/`. Those
 `#else` branches are unexercised, and the POSIX socket code is the most likely thing to need
@@ -106,7 +106,7 @@ Two things to expect beyond compilation:
 
 ## Protocol
 
-`PROTOCOL.md` describes the control format between the mod, the endpoint agent, and the relay.
+`PROTOCOL.md` describes the control format between the mod and the endpoint agent.
 `tools/protocol_vectors.py` is the **normative encoder** -- the document is the prose, the script is
 the definition -- and it generates byte vectors that every implementation is checked against:
 
@@ -116,7 +116,7 @@ python tools/protocol_vectors.py                        # writes build/protocol/
 ctest --test-dir build-cpp -C RelWithDebInfo            # C++ codec, same vectors
 ```
 
-A field width that differs between the Java codec and the C++ relay or agent fails the build instead
+A field width that differs between the Java codec and the C++ agent fails the build instead
 of becoming subtly wrong bytes on the wire. Editing the format means editing the script and
 `PROTOCOL.md` together.
 
@@ -182,11 +182,10 @@ local-release flow, and `AGENTS.md` for repository conventions.
 ```
 PROTOCOL.md                                # the wire format (prose; the script below is the definition)
 CMakeLists.txt                             # the C++ build root
-relay/                                     # C++20 agent: codec, framing, sessions
-├─ include/rw/                             # wire.hpp protocol.hpp stream.hpp credential.hpp
-│                                          #   agent.hpp  relay.hpp (retired)
-├─ src/                                    # implementations + main.cpp (agent, keygen, relay)
-└─ tests/                                  # vectors_test, credential_test, agent_test, relay_e2e_test
+agent/                                     # C++20 agent: codec, framing, sessions
+├─ include/rw/                             # wire.hpp protocol.hpp stream.hpp credential.hpp agent.hpp
+├─ src/                                    # implementations + main.cpp (agent, keygen)
+└─ tests/                                  # vectors_test, credential_test, agent_test
 versions/<mc>/version.properties        # Minecraft / loader / toolchain pins (canonical)
 versions/<mc>/<module>/
 ├─ module.properties                    # id / name / group / authors / license / description

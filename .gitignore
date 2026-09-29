@@ -3,7 +3,7 @@
 build/
 run/
 
-# CMake (the C++ relay and agent side)
+# CMake (the C++ agent side)
 build-cpp/
 cmake-build-*/
 

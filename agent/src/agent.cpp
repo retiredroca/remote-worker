@@ -7,19 +7,7 @@
 
 #include "rw/wire.hpp"
 
-// The same headers the relay uses for its accept() path. SocketStream wraps the handle; these are
-// for the bind and accept calls around it.
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#endif
-
-// The same headers the relay uses for its accept() path. SocketStream wraps the handle; these are
-// for the bind/accept calls that wrap it.
+// For the accept() calls around SocketStream, which owns the handle itself.
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>

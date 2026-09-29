@@ -1,8 +1,8 @@
 // The endpoint agent: the one thing that runs on the machine being watched.
 //
-// There is no relay. A controller holds a list of endpoints and connects to each one directly, so
-// the agent only ever has to deal with a single peer at a time, and it never has to know the names
-// or addresses of anything else on the network. It exposes a port, and every request on that port
+// A controller holds a list of endpoints and connects to each one directly, so the agent only ever
+// deals with a single peer at a time and never needs to know the names or addresses of anything
+// else on the network. It exposes a port, and every request on that port
 // is authenticated against the key this machine minted for itself (PROTOCOL.md 3).
 //
 // What it is NOT yet: it does not capture or encode a desktop. Until that exists it refuses to

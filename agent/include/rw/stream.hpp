@@ -1,6 +1,6 @@
 // Framing over a byte stream, and the two stream implementations: a plain socket and (later) TLS.
 //
-// The seam exists so the relay's routing logic never knows whether it is moving plaintext or
+// The seam exists so the agent's session logic never knows whether it is moving plaintext or
 // ciphertext, and so the tests can drive the real code path over loopback.
 //
 // --- where transport security plugs in -----------------------------------------------------------
@@ -9,15 +9,15 @@
 //
 //     class TlsStream : public ByteStream { ... };   // handshake, then read/write on the session
 //
-// and the relay wraps the accepted socket instead of adopting it. Nothing above this line changes:
-//   - Relay never reads or writes bytes itself. All I/O goes through Connection::channel, which is a
-//     FramedChannel over a ByteStream. The only socket it touches directly is the listener, for
-//     accept() and readiness.
+// and the agent wraps the accepted socket instead of adopting it. Nothing above this line changes:
+//   - The agent never reads or writes bytes itself. All I/O goes through the peer's channel, which
+//     is a FramedChannel over a ByteStream. The only socket it touches directly is the listener,
+//     for accept().
 //   - FramedChannel knows nothing about TLS, so record boundaries survive a partial read either way.
 //   - The accept path is the single place a TlsStream would be constructed.
 //
-// The `--allow-unauthenticated-lan` flag is the decision point that stays either way: with TLS in
-// place it becomes "bind a LAN address", without it it is an explicit acceptance of the risk.
+// The agent binds every interface by design, because it authenticates every request. With TLS in
+// place the open question it answers is who is on the other end, not whether to listen.
 #pragma once
 
 #include <cstdint>
@@ -42,9 +42,8 @@ public:
 
 // A message as it arrived, with the exact bytes it arrived in.
 //
-// Both halves are kept because the relay decodes to decide what to do and then forwards the
-// original bytes: re-encoding a decoded video frame would be a second full copy of every frame on
-// the hot path, for no benefit, since the round trip is byte-exact anyway.
+// Both halves are kept because a message is decoded to decide what to do, and re-encoding a decoded
+// video frame would be a second full copy of every frame on the hot path, for no benefit.
 struct ReceivedFrame {
     std::vector<uint8_t> raw;
     Message message;
@@ -62,7 +61,7 @@ public:
     // Frames and writes one message.
     void write_message(const Message& message);
 
-    // Writes an already-framed message. This is how the relay forwards.
+    // Writes an already-framed message, for forwarding without a decode/encode round trip.
     void write_raw(std::span<const uint8_t> framed_message);
 
 private:

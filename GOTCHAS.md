@@ -304,12 +304,12 @@ symptom looked like. Keep the check that proves it.
   ```
 
   To see the bug that check was added for, delete the `b.flags = headerFlags;` line in
-  `relay/src/protocol.cpp` and rebuild.
+  `agent/src/protocol.cpp` and rebuild.
 
 - **Cause:** `Message` carried a `flags` member *and* `Frame` carried its own. `encode_message` wrote
   the header from the member and `parse_message` filled the body from the same byte, so the two
   always agreed with the wire and disagreed with each other. It only showed up where a consumer reads
-  the body, which is the relay's partner and, later, the mod.
+  the body, which is the agent's peer and, later, the mod.
 
 - **Fix:** one owner. `Message` has no `flags`; `body_flags(const Body&)` derives the header byte
   from the body that defines it, and `encode_message` writes that. This is the same shape as the Java
@@ -325,8 +325,8 @@ symptom looked like. Keep the check that proves it.
 - **Check that proves it:** the warning names the line, and the fix is to copy:
 
   ```cpp
-  const auto& ep = relay.endpoints().front();   // endpoints() returns by value: `ep` dangles
-  const auto ep = relay.endpoints().front();    // a copy of the small struct
+  const auto& ep = list.front();   // returns by value: `ep` dangles
+  const auto ep = list.front();    // a copy of the small struct
   ```
 
   Lifetime extension only applies when a reference binds *directly* to the temporary, not to a
@@ -359,20 +359,20 @@ symptom looked like. Keep the check that proves it.
   add_custom_target(protocol_vectors DEPENDS "${VECTORS}")
   ```
 
-### The relay is not on the path the test thinks it is
+### The C++ side is not on the path the test thinks it is
 
 - **Symptom:** none, yet. Recorded because the check is cheap and the assumption is easy to make:
-  the relay is **not** a Minecraft module. The root `build.gradle` discovers modules by scanning
+  the C++ agent is **not** a Minecraft module. The root `build.gradle` discovers modules by scanning
   `versions/<mc>/` for a directory holding both `fabric/` and `neoforge/`
-  (`build.gradle:11-13`, and the same scan in `settings.gradle:30-36`), so anything under `relay/` is
-  invisible to Gradle and anything under `dist/` is rejected by the release gate at
-  `.github/workflows/release-mod.yml:185`, which only allows `*-<version>-(fabric|neoforge|universal).jar`.
+  (`build.gradle:11-13`, and the same scan in `settings.gradle:30-36`), so anything under `agent/` is
+  invisible to Gradle, and the C++ build is driven by explicit CMake source lists rather than by
+  discovery — so a new `.cpp` has to be added to `CMakeLists.txt` by hand or it is silently not built.
 
 - **Check that proves it:**
 
   ```bash
   ./gradlew :remote-worker-fabric:protocolCheck   # Java codec
-  ctest --test-dir build-cpp -C RelWithDebInfo   # C++ codec and the relay e2e test
+  ctest --test-dir build-cpp -C RelWithDebInfo   # C++ codec, credentials and agent tests
   ```
 
   Both run independently. A green Gradle build says nothing about the C++ side, and a green
@@ -389,8 +389,8 @@ symptom looked like. Keep the check that proves it.
   parse. A flag whose effect cannot be seen from the program's own output is a flag to distrust.
 
   ```bash
-  ./build-cpp/bin/RelWithDebInfo/remote-worker-relay.exe --bind 127.0.0.1 --port 45999
-  ./build-cpp/bin/RelWithDebInfo/remote-worker-relay.exe --bind 127.0.0.1 --port 45999   # again
+  ./build-cpp/bin/RelWithDebInfo/remote-worker.exe agent --bind 127.0.0.1 --port 45999
+  ./build-cpp/bin/RelWithDebInfo/remote-worker.exe agent --bind 127.0.0.1 --port 45999   # again
   ```
 
   Both must report 45999. Before the fix both reported a random port. A second live bind of the same
@@ -456,10 +456,10 @@ connected. Not a crash and not a spin -- a wait.
 banner, after it completes in under a second.
 
 **Cause.** `SocketStream::listen()` never called `set_nonblocking()` on the listener
-(`relay/src/stream.cpp`). `accept()` on a blocking socket does not return "nothing is queued", it
-waits, and both daemons call `accept()` at the top of every `run_once()`. This was pre-existing: the
-relay had the identical bug, and the relay e2e test never saw it because it only reached `accept()`
-when a connection was already queued. A daemon started with nothing connecting to it does nothing
+(`agent/src/stream.cpp`). `accept()` on a blocking socket does not return "nothing is queued", it
+waits, and the daemon calls `accept()` at the top of every `run_once()`. This was pre-existing: the
+retired relay had the identical bug, and its end-to-end test never saw it because it only reached
+`accept()` when a connection was already queued. A daemon started with nothing connecting to it does nothing
 but hang.
 
 **Fix.** The listener is made non-blocking in `listen()`, so `accept()` reports EWOULDBLOCK and the
@@ -522,3 +522,29 @@ This one does not, and the difference is deliberate.
   before: the release must carry the jars *and* one agent binary per supported platform, and a
   missing one is a hard failure rather than a warning. See "The staged binary was deleted by its own
   Sync" above for the version of this that shipped a release with no binary and reported success.
+
+## Renaming the C++ directory, or the release silently ships no binary
+
+**Symptom:** after renaming `relay/` to `agent/`, `./gradlew build` was still green and the jars
+were all produced, but `build/release/` had no `.exe`. A local-only release then failed its own gate
+with `expected exactly 1 agent binary in dist/, found 0`.
+
+**Check.** `ls build/release/` — three jars, no binary. The staged file is missing at its source too:
+`ls build/cpp/staged/`.
+
+**Cause.** The Gradle C++ path names the source directory in three places, and CMake names it in
+more:
+
+- `build.gradle` — `inputs.dir file('agent')` on both `cmakeConfigure` and `cppBuild`
+- `CMakeLists.txt` — every `agent/src/*.cpp` and `agent/include` in the library definitions
+- `cppBuildDir` is a *fresh* CMake build directory, so after a rename it re-configures from scratch
+  and silently produces nothing if its source list still points at the old path
+
+Nothing errors on a wrong source path here, which is the whole difficulty: CMake is given a path that
+does not exist, finds no such file to compile, and reports a successful build of the target's other
+sources. The failure surfaces one step later, as a missing artifact.
+
+**The rule.** After touching a path the C++ build reads, check the artifact the build exists to
+produce, not the exit code: `ls build/cpp/staged/remote-worker.exe` and `ls build/release/`. A green
+build with a missing artifact is the specific failure this whole file keeps finding, in five different
+guises now. `./gradlew build` does not fail on a missing C++ source.

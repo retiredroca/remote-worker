@@ -2,7 +2,7 @@
 //
 // There is no protocol vector for this -- credentials never appear in the wire format's field
 // definitions, only as an opaque byte run in OPEN_SESSION -- so the primitive is tested here, and
-// the end-to-end flow is tested in relay_e2e_test.cpp.
+// the end-to-end flow is tested in agent_test.cpp.
 #include <algorithm>
 #include <cctype>
 #include <cstdio>

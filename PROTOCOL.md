@@ -1,8 +1,8 @@
 # Wire protocol
 
-The control protocol between the three components: the **mod** (the controller, in-game), the
-**agent** (on the endpoint being viewed), and the **relay** (a LAN daemon that pairs them and
-routes between them).
+The control protocol between two components: the **mod** (the controller, in-game) and the **agent**
+(on the endpoint being viewed). A controller holds a list of endpoints and connects to each agent
+directly; there is no third process in the middle.
 
 ## 1. What defines this format
 
@@ -18,8 +18,9 @@ C++, C++) can drift apart silently. Instead:
   `build/protocol/vectors.txt`).
 - `ProtocolVectorsCheck` decodes and re-encodes every one, and must be refused by the decoder for
   every malformed one. It runs from `check` in both loader builds, so `./gradlew build` runs it.
-- `ctest` runs the same vectors against the C++ codec in `relay/`, plus an end-to-end test that
-  pairs an agent and a controller through the relay over loopback sockets.
+- `ctest` runs the same vectors against the C++ codec in `agent/`, plus a credentials test and an
+  agent test that drives a real controller peer over loopback and asserts what the agent accepts
+  and refuses.
 
 The vectors are generated into `build/` and not committed: the generator is the single source of
 truth, so a committed copy could only ever disagree with it.
@@ -28,9 +29,9 @@ truth, so a committed copy could only ever disagree with it.
 
 | where | language | state |
 |---|---|---|
-| `versions/<mc>/<module>/common/.../protocol/` | Java | codec complete, 40 vectors checked on every build |
-| `relay/` | C++20 | codec complete, 40 vectors checked by `ctest`; relay routes and forwards them |
-| `relay/`, later `agent/` | C++20 | capture, encode and input injection not started |
+| `versions/<mc>/<module>/common/.../protocol/` | Java | codec complete, vectors checked on every build |
+| `agent/` | C++20 | codec complete, vectors checked by `ctest`; the agent's session handling |
+| `agent/` | C++20 | **capture, encode and input injection not started** -- the agent refuses to open a session, see section 3 |
 
 Two API notes, because they are the kind of thing that silently produces a wrong result:
 
@@ -161,34 +162,35 @@ way to *also* stop a key being copied to another machine is a hardware secret �
 Enclave, which never releases the key — and that is a genuine dependency on optional hardware, so it
 is a later item rather than this one.
 
-The relay keeps a `DuplicateEndpoint` guard as a backstop. It is not the mechanism: the id is
-already unique by construction. It was a guard in the relay's endpoint registry, which is gone with
-the relay, and it stays in the error enum because an id that somehow did collide must be *denied*
-rather than silently accepted as the same machine.
+`DuplicateEndpoint` stays in the error enum as a backstop. It is not the mechanism — the id is
+already unique by construction — and nothing sends it today, because the registry it guarded is gone.
+It stays defined so that if two ids ever did collide, the answer is to *deny* a machine rather than
+let two of them be reachable under one name.
 
 **The agent generates the key, and the agent is the only thing that checks it.** The consequences
 worth stating, because each is a property that came from the design rather than being bolted on:
 
-- **There is no middleman holding a key.** With the relay gone, no other process ever sees a
-  credential it could reuse.
+- **There is no middleman holding a key.** No process other than the agent ever sees a credential it
+  could reuse.
 - **Revocation is per machine.** Rotating one agent's key invalidates only that agent, and only
   costs that machine its pairings. A single shared secret would have to be rotated everywhere at
   once, which is a much worse answer to "this one machine is compromised".
 - **The user can mint and revoke at will**, from the agent's own CLI: `remote-worker keygen` and
   `remote-worker keygen --rotate`.
 
-### There is no relay
+### The agent's id is configured, not negotiated
 
 A controller holds a list of endpoints -- each an address plus the key for that machine -- and
-connects to each one directly. The agent is the only program that runs on a watched machine, and
-there is nothing in the middle for it to talk to.
+connects to each one directly. There is nothing in the middle.
 
-The relay that used to sit between them still exists in the tree and is still tested, because deleting
-it is a separate change from removing it from the product. Nothing ships it.
+The consequence is that the **machine id is not negotiated**: the controller has to be told it, and
+`remote-worker keygen` prints it next to the key for exactly that reason. A controller that asks for
+the wrong id is told so, with both ids in the message, rather than being redirected to whatever is
+listening on that port.
 
-The visible consequence is that the **agent's id is not negotiated**: the controller has to be told
-it, and `remote-worker keygen` prints it next to the key for exactly that reason. A controller that
-asks for the wrong id is told so, with both ids in the message, rather than being redirected.
+There is also no discovery. An agent is a configured endpoint, not something found on the network —
+which is the right trade here, since a broadcast that reveals which machines are willing to be
+viewed is itself a disclosure.
 
 ### The flow, all of it in existing messages:
 
@@ -210,10 +212,11 @@ asks for the wrong id is told so, with both ids in the message, rather than bein
 6. The connection stays up for the session, carrying `FRAME` messages one way and `INPUT_BATCH` the
    other, and is closed by `CLOSE_SESSION` or by dropping the socket.
 
-`AGENT_HELLO` and `AGENT_HEARTBEAT` exist in the format for an agent that announces itself to a
-registry. With no relay there is no registry, so nothing sends them yet; they stay in the type
-registry because removing a message type changes the wire format and the vectors, and a type that is
-defined but unused is not a cost worth paying for.
+`AGENT_HELLO`, `AGENT_HEARTBEAT` and `AGENT_STATS` exist in the format for an agent that announces
+itself to a registry. There is no registry, so nothing sends them; they stay in the type registry
+because removing a message type changes the wire format and the vectors, and a defined-but-unused
+type is not worth a format break. `NotFound` and `DuplicateEndpoint` are unused for the same reason
+and are covered by the vectors.
 
 The id routes; the key authorises. They are the same object, which is why the id cannot be forged:
 a controller that knows a machine's id still cannot reach it without the key, and a controller that
@@ -225,20 +228,15 @@ protocol without one.
 
 ### Why a wrong key and a wrong machine id are both `AuthFailed`
 
-With the relay gone this got simpler rather than more subtle, and it is worth keeping the reasoning,
-because the obvious "improvement" reintroduces a real leak.
+Both cases get the same answer deliberately, and the reasoning is worth keeping because the obvious
+"improvement" — telling a caller *which* half was wrong — reintroduces a real leak.
 
-The retired relay answered `NotFound` instead of `AuthFailed`, because a `NotFound`/`AuthFailed`
-distinction turns a reachable relay into an **enumeration oracle**: a caller with no key could walk
-a list of guessed machine names and learn which are real and which are refusing — from the error
-code alone, before seeing a screen. That is a map, worth more than any single screen.
-
-Direct connections change the shape of the question but not the answer. The agent is addressed by
-`host:port`, so the set of machines is no longer a list the controller walks; a caller who has reached
-*this* port already knows *this* machine exists. What it still gains by being careful is the
-distinction between "wrong machine id" and "wrong key", which would confirm that a guessed id is
-live. So the agent answers `AuthFailed` for both, and puts both ids in the message text -- which
-names the real machine *and* says nothing an attacker did not already have. `agent_test` pins it.
+The agent is addressed by `host:port`, so a caller that has reached *this* port already knows *this*
+machine exists; the set of machines is not a list anyone walks. What separating the two cases would
+still buy an attacker is confirmation that a guessed machine id is live. So a wrong id and a wrong key
+both answer `AuthFailed`, and the message names both ids — which tells the legitimate user which id
+the agent actually has, and tells an attacker nothing they did not already know. `agent_test` pins
+this.
 
 `AgentBusy` is likewise only ever sent after a credential has been accepted, so a caller with no key
 cannot learn whether a machine is in use.
@@ -288,28 +286,28 @@ Grouped into ranges by category, so a message can be added later without renumbe
 | range | category |
 |---|---|
 | `0x00`-`0x0F` | session and connection |
-| `0x10`-`0x1F` | media, agent to controller, relayed |
-| `0x20`-`0x2F` | input, controller to agent, relayed |
+| `0x10`-`0x1F` | media, agent to controller |
+| `0x20`-`0x2F` | input, controller to agent |
 | `0x30`-`0x3F` | agent control and telemetry |
 
 | type | name | direction |
 |---|---|---|
-| `0x01` | `HELLO` | any to relay |
-| `0x02` | `HELLO_ACK` | relay to any |
-| `0x03` | `ERROR` | any |
-| `0x04` | `OPEN_SESSION` | controller to relay |
-| `0x05` | `SESSION_OPENED` | relay to controller |
-| `0x06` | `CLOSE_SESSION` | controller to relay |
-| `0x07` | `PING` | controller and agent, relayed |
-| `0x08` | `PONG` | controller and agent, relayed |
-| `0x0E` | `BYTES` | controller and agent, relayed, opaque |
-| `0x10` | `CONFIG` | agent to controller, relayed |
-| `0x11` | `FRAME` | agent to controller, relayed |
-| `0x12` | `KEYFRAME_REQUEST` | controller to agent, relayed |
-| `0x20` | `INPUT_BATCH` | controller to agent, relayed |
-| `0x30` | `AGENT_HELLO` | agent to relay |
-| `0x31` | `AGENT_HEARTBEAT` | agent to relay |
-| `0x32` | `AGENT_STATS` | agent to relay to controller |
+| `0x01` | `HELLO` | controller to agent |
+| `0x02` | `HELLO_ACK` | agent to controller |
+| `0x03` | `ERROR` | either |
+| `0x04` | `OPEN_SESSION` | controller to agent |
+| `0x05` | `SESSION_OPENED` | agent to controller |
+| `0x06` | `CLOSE_SESSION` | either |
+| `0x07` | `PING` | either |
+| `0x08` | `PONG` | either |
+| `0x0E` | `BYTES` | either, opaque |
+| `0x10` | `CONFIG` | controller to agent |
+| `0x11` | `FRAME` | agent to controller |
+| `0x12` | `KEYFRAME_REQUEST` | controller to agent |
+| `0x20` | `INPUT_BATCH` | controller to agent |
+| `0x30` | `AGENT_HELLO` | unused; was agent to registry |
+| `0x31` | `AGENT_HEARTBEAT` | unused; was agent to registry |
+| `0x32` | `AGENT_STATS` | unused; was agent to registry |
 
 ## 5. Messages
 
@@ -328,8 +326,9 @@ HELLO_ACK   u16 protocol, string instance_id, u32 max_message, u16 max_width, u1
 ```
 
 `HELLO` is the first message on any connection. A peer whose `[min, max]` does not overlap the
-relay's is refused with `ERROR` / `UNSUPPORTED_VERSION`. `max_message` lets the relay lower the
-limit for everyone rather than negotiating it per message.
+agent's is refused with `ERROR` / `UNSUPPORTED_VERSION`. `max_message` lets the receiver lower the
+limit for a session rather than negotiating it per message. The agent only ever accepts
+`role = CONTROLLER`; anything else is `BAD_MESSAGE`.
 
 ### 5.2 `ERROR`
 
@@ -353,9 +352,8 @@ CLOSE_SESSION    u16 reason
 controller is free to disagree, and reports what it actually settled on in `CONFIG`.
 
 `machine_id` is the id derived from the endpoint's key, and `credential` is that key — see
-section 3. The relay forwards it
-without reading it and the agent is the only party that checks it, so an empty one is a rejected
-credential rather than a legacy request. The mod's `OpenSession.toString()` deliberately prints the
+section 3. The agent is the only party that checks it, so an empty one is a rejected credential
+rather than a legacy request. The mod's `OpenSession.toString()` deliberately prints the
 credential's *length* and not its bytes: a protocol dump in a log or a bug report is exactly where a
 token would otherwise end up.
 
@@ -380,8 +378,8 @@ readout are computed from.
 bytes payload
 ```
 
-Opaque to the relay, which forwards it without reading it. Carries the end-to-end session
-(section 3). The relay enforces `MAX_MESSAGE` and nothing else.
+Opaque to the sender's peer: it is carried, length-checked, and not interpreted. Carries the
+end-to-end session (section 3). `MAX_MESSAGE` is the only thing enforced.
 
 ### 5.6 `CONFIG`
 
