@@ -13,6 +13,7 @@ while (repoRoot != null && !new File(repoRoot, 'gradle/versions.gradle').exists(
     repoRoot = repoRoot.parentFile
 }
 apply from: new File(repoRoot, 'gradle/versions.gradle')
+apply from: new File(repoRoot, 'gradle/mirror-sources.gradle')
 
 version = mod_version
 group = mod_group_id
@@ -29,7 +30,13 @@ sourceSets.main.resources {
 def commonPrefix = mod_group_id
 def relocatedPrefix = "${mod_group_id}.neoforge.common"
 
-tasks.register('relocateCommonSources', Copy) {
+// Sync, not Copy: a Copy adds and never removes, so a *renamed or deleted* source leaves its
+// generated copy behind. compileJava then compiles it, and the stale .class ends up in the jar
+// alongside the current one -- from a green build, with every test passing. Sync makes the
+// destination match the source exactly. Each of these writes to a distinct directory
+// (generated/common, generated/loader, generated/common-test), so they cannot delete each other's
+// output.
+tasks.register('relocateCommonSources', Sync) {
     from(rootProject.file('../common/src/main/java'))
     into(layout.buildDirectory.dir('generated/common'))
     filter { String line ->
@@ -37,7 +44,13 @@ tasks.register('relocateCommonSources', Copy) {
     }
 }
 
-tasks.register('relocateLoaderSources', Copy) {
+// Sync, not Copy: a Copy adds and never removes, so a *renamed or deleted* source leaves its
+// generated copy behind. compileJava then compiles it, and the stale .class ends up in the jar
+// alongside the current one -- from a green build, with every test passing. Sync makes the
+// destination match the source exactly. Each of these writes to a distinct directory
+// (generated/common, generated/loader, generated/common-test), so they cannot delete each other's
+// output.
+tasks.register('relocateLoaderSources', Sync) {
     from('src/main/java')
     into(layout.buildDirectory.dir('generated/loader'))
     filter { String line ->
@@ -52,7 +65,13 @@ tasks.register('relocateLoaderSources', Copy) {
 // The wire-format conformance check lives in common/src/test/java and is relocated for the same
 // reason main is: the two loader builds compile it against differently named classes
 // (<group>.fabric.common.* versus <group>.neoforge.common.*).
-tasks.register('relocateCommonTestSources', Copy) {
+// Sync, not Copy: a Copy adds and never removes, so a *renamed or deleted* source leaves its
+// generated copy behind. compileJava then compiles it, and the stale .class ends up in the jar
+// alongside the current one -- from a green build, with every test passing. Sync makes the
+// destination match the source exactly. Each of these writes to a distinct directory
+// (generated/common, generated/loader, generated/common-test), so they cannot delete each other's
+// output.
+tasks.register('relocateCommonTestSources', Sync) {
     from(rootProject.file('../common/src/test/java'))
     into(layout.buildDirectory.dir('generated/common-test'))
     filter { String line ->

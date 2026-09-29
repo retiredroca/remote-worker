@@ -60,6 +60,9 @@ private:
     struct Peer {
         std::unique_ptr<SocketStream> socket;
         std::unique_ptr<FramedChannel> channel;
+        // The peer's address as a dotted quad, captured at accept(). "Is this peer me?" is a
+        // question about the connection, not about anything the peer claimed about itself.
+        std::string remoteAddress;
         bool greeted = false;
         bool authenticated = false;
     };
@@ -76,6 +79,11 @@ private:
     // naming a different machine. Returns an ErrorCode, or an empty optional to mean accepted.
     std::optional<ErrorCode> authenticate(Peer& peer, const OpenSession& request,
                                          const std::string& what);
+    // True when `address` is this machine: the loopback interface, or one of this host's own
+    // addresses. A remote desktop pointed at the machine it is running on is not a remote desktop,
+    // and the agent is the only place that can be sure of the answer -- the controller could be a
+    // hand-written client that does not check, and a peer cannot be asked whether it is local.
+    bool peer_is_this_host(const std::string& address) const;
     void log(const std::string& line) const;
 
     AgentOptions options_;

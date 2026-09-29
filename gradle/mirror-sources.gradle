@@ -1,0 +1,156 @@
+// Keeps a loader's compiled output honest about which sources produced it.
+//
+// Applied by both loader builds (see `apply from` in each), because the problem is identical in both
+// and a fix that exists twice will eventually exist once.
+//
+// --- why this exists -----------------------------------------------------------------------------
+// The loader builds do not compile from `src/main/java` directly. `relocateCommonSources` and
+// `relocateLoaderSources` are *Copy* tasks that mirror the sources into `build/generated/...`, and
+// the source set points at the mirror. A Copy adds and never removes, so renaming or deleting a
+// source leaves its generated copy behind, compileJava compiles that, and the stale `.class` is
+// packaged alongside the current one.
+//
+// The symptom is quiet: a green build, passing tests, and a jar containing both `ExampleMod.class`
+// and `RemoteWorker.class`. Nothing warns, because nothing is wrong with any step -- the mirror is
+// just no longer a mirror. `./gradlew clean` hides it, which is exactly why it survived review.
+//
+// --- why Sync alone is not enough -----------------------------------------------------------------
+// Making the relocate tasks `Sync` is necessary but not sufficient. Gradle skips an up-to-date task
+// entirely, actions included, so a Sync that is up-to-date never reconciles and the stale file
+// survives. Verified: a `Sync` relocate task left a planted stale source in place, and the class
+// reached the jar. That is why this script forces both halves to run.
+//
+// --- the two parts --------------------------------------------------------------------------------
+// 1. The relocate tasks always re-run, so `Sync` genuinely reconciles the mirror each build.
+// 2. A prune that enforces the invariant directly: *a .class in the output must have a source*.
+//    Part 1 is what stops a stale class being produced; part 2 is what removes one that a previous
+//    build already produced, which is the state a developer's tree is actually in.
+//
+// Neither part is expensive: a handful of small file copies, and a directory walk of a few hundred
+// files. Neither touches a fresh CI checkout, which has no history to be stale about.
+
+// Force the mirroring tasks to reconcile on every build, so Sync's delete-then-copy actually happens.
+tasks.withType(AbstractCopyTask).matching { it.name.startsWith('relocate') }.configureEach {
+    outputs.upToDateWhen { false }
+}
+
+/**
+ * The fully-qualified names the current sources would compile to, read from the compile task's own
+ * resolved source collection.
+ *
+ * Matching on *names* rather than on directories, because the directory approach has two traps and
+ * both were hit: `sourceSet.java.srcDirs` holds task references rather than directories (so every
+ * class looked sourceless and the whole output was deleted), and reading a relocate task's
+ * destination did not resolve to the mirror either. The compile task's `source` is the one file
+ * collection Gradle itself resolves for this exact purpose, so it cannot be wrong about where the
+ * sources are.
+ *
+ * The package is read out of each file rather than inferred from its path, because the loader builds
+ * *rewrite* the package while relocating (`...remoteworker` becomes `...remoteworker.fabric.common`),
+ * so the path on disk does not agree with the class name it produces.
+ */
+def declaredClassNames = { String compileTaskName ->
+    def compileTask = tasks.findByName(compileTaskName)
+    if (compileTask == null) {
+        return new HashSet<String>()
+    }
+    Set<String> names = new HashSet<String>()
+    for (File source : compileTask.source.files) {
+        if (!source.isFile() || !source.name.endsWith('.java')) {
+            continue
+        }
+        String packageName = ''
+        source.withReader('UTF-8') { Reader reader ->
+            String line
+            while ((line = reader.readLine()) != null) {
+                String trimmed = line.trim()
+                if (trimmed.startsWith('package ') && trimmed.endsWith(';')) {
+                    packageName = trimmed.substring('package '.length(),
+                            trimmed.length() - 1).trim()
+                    break
+                }
+                // A comment or an annotation before the package would make this a package; anything
+                // else means the declaration is not here and the file is not a source we can name.
+                if (!trimmed.isEmpty() && !trimmed.startsWith('//') && !trimmed.startsWith('/*')
+                        && !trimmed.startsWith('*') && !trimmed.startsWith('@')) {
+                    break
+                }
+            }
+        }
+        String typeName = source.name.substring(0, source.name.length() - '.java'.length())
+        names.add(packageName.isEmpty() ? typeName : packageName + '.' + typeName)
+    }
+    return names
+}
+
+/** Deletes any compiled class in `sourceSet`'s output whose name no current source declares. */
+def pruneOrphans = { org.gradle.api.tasks.SourceSet sourceSet, Set<String> declared,
+                     List<String> removed ->
+    File classRoot = sourceSet.output.classesDirs.singleFile
+    if (!classRoot.isDirectory()) {
+        return
+    }
+    classRoot.eachFileRecurse(groovy.io.FileType.FILES) { File compiled ->
+        if (!compiled.name.endsWith('.class')) {
+            return
+        }
+        String relative = classRoot.toPath().relativize(compiled.toPath()).toString()
+        String withoutExtension = relative.substring(0, relative.length() - '.class'.length())
+        // Foo$Inner.class is produced by Foo.java, so the nested part is dropped before comparing.
+        int nested = withoutExtension.indexOf('$')
+        String topLevel = nested < 0 ? withoutExtension : withoutExtension.substring(0, nested)
+        String binaryName = topLevel.replace(File.separatorChar, '.' as char)
+        if (!declared.contains(binaryName)) {
+            compiled.delete()
+            removed << relative
+        }
+    }
+}
+
+def pruneStaleClasses = tasks.register('pruneStaleClasses') {
+    description = 'Deletes compiled classes that no current source would produce.'
+    group = 'build'
+    // Always. A stale class is precisely a state that no up-to-date check would ever notice, so a
+    // task that could be skipped is a task that would not catch it.
+    outputs.upToDateWhen { false }
+    doLast {
+        Set<String> main = declaredClassNames('compileJava')
+        Set<String> test = declaredClassNames('compileTestJava')
+        if (main.isEmpty() && test.isEmpty()) {
+            throw new GradleException('pruneStaleClasses resolved no sources at all; refusing to '
+                    + 'prune against an empty set, which would delete every class')
+        }
+        List<String> removed = []
+        pruneOrphans(sourceSets.main, main, removed)
+        pruneOrphans(sourceSets.test, test, removed)
+        if (removed.isEmpty()) {
+            logger.lifecycle('pruneStaleClasses: nothing stale ({} sources checked)', main.size())
+        } else {
+            logger.lifecycle('pruneStaleClasses: removed {} class(es) with no source: {}',
+                    removed.size(), removed)
+        }
+    }
+}
+
+// Ordering, which is the part that is easy to get wrong and expensive to get wrong.
+//
+// The prune must run AFTER the compile tasks, not merely before the jar. It decides whether a class
+// has a source by looking in the generated mirror, and the mirror is rewritten by the relocate
+// tasks that compilation itself triggers. Running the prune first therefore finds an empty or
+// half-rewritten mirror, concludes that every class is an orphan, and deletes the entire output --
+// which is exactly what happened on the first attempt, taking ProtocolException.class with it.
+//
+// So: compile, then prune, then package. The prune depends on the compile tasks, and the jar tasks
+// depend on the prune, which gives that order without a cycle.
+['compileJava', 'compileTestJava'].each { String name ->
+    if (tasks.findByName(name) != null) {
+        pruneStaleClasses.configure { dependsOn tasks.named(name) }
+    }
+}
+
+// `remapJar` on the loaders that use one, `jar` on the ones that do not.
+['jar', 'remapJar'].each { String name ->
+    if (tasks.findByName(name) != null) {
+        tasks.named(name) { dependsOn pruneStaleClasses }
+    }
+}

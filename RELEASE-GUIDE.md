@@ -3,9 +3,14 @@
 This file covers **releasing**. For building, adding Minecraft versions or adding modules, see
 `PROJECT-GUIDE.md`.
 
-Everything below is driven by one command, `python tools/release.py`, or by the release workflows in
-`.github/workflows/`. Component versions are **declarative**: only the component you name gets a new
-version; nothing infers it from the files you changed.
+Everything below is driven by one command, `python tools/release.py`, and by
+`.github/workflows/release-ci.yml`. Component versions are **declarative**: only the component you
+name gets a new version; nothing infers it from the files you changed.
+
+The local command no longer builds the release. It bumps the version, commits, creates a **signed**
+tag, pushes it, and stops; the workflow triggered by that tag does the building. That is not a
+stylistic choice — a native agent binary only exists for the platform it was compiled on, so a
+release built on one machine cannot produce a complete release. See `GOTCHAS.md`.
 
 ## Version scheme
 
@@ -42,29 +47,32 @@ python tools/release.py --mod all --dry-run
 
 `--dry-run` prints every step without changing any file or touching git.
 
-## Full local release
+## The release
 
 ```bash
-python tools/release.py --mod all                       # build + GitHub release, CI publishes
-python tools/release.py --mod all --curseforge --modrinth   # publish from this machine instead
+python tools/release.py --mod all --ci
 ```
 
 It does, in order:
 
 1. bump `versions.properties` for the named component(s), and rewrite the dependents' library floor;
-2. publish the library module(s) to the in-repo maven (`repo/`) — required before dependents compile;
-3. build the staged release groups:
-   `releaseLoaderJars` → `releaseLoaderBundles` → `releaseUniversal` → `releaseUniversalBundles`,
-   then `releaseJars` (the ordered union) into `build/release/`;
-4. copy those jars to `dist/` and write `dist/changelog.md`;
-5. commit the bump/floor, push, create and push a signed tag, then create the GitHub release with
-   every jar attached;
-6. dispatch `.github/workflows/publish-release.yml`, which uploads the **universal** jars to
-   CurseForge and Modrinth (pass `--no-ci-publish` to skip; skip it automatically with
-   `--curseforge`/`--modrinth`, which publish from this machine instead).
+2. commit the bump/floor and push it;
+3. create a **signed** tag and push it;
+4. stop.
 
-Platform publishing needs `CURSEFORGE_API_KEY` / `MODRINTH_TOKEN` in the environment, plus
-`CURSEFORGE_PROJECT_ID` / `MODRINTH_ID` when publishing locally.
+The tag push is the hand-off. `release-ci.yml` then builds the mod jars on ubuntu (Java only), builds
+and `ctest`s the agent natively on `ubuntu-latest` / `windows-latest` / `macos-14`, and — only if
+every one of those passed and the assembled set is exactly one binary per platform — creates the
+GitHub release with all six files attached. A platform that fails stops the release rather than
+shipping a partial set.
+
+Nothing else is published anywhere. This project has no CurseForge or Modrinth presence; that came
+from the template it was generated from, together with three workflows and a set of flags that
+existed only to drive it, all of which have been removed.
+
+There is also a fallback, kept for emergencies: running **without** `--ci` builds and publishes the
+release from this machine. It can only ever attach the *host* platform's agent binary, so a release
+made that way is incomplete for anyone else.
 
 ## Flags
 
@@ -72,18 +80,16 @@ Platform publishing needs `CURSEFORGE_API_KEY` / `MODRINTH_TOKEN` in the environ
 --mc <version>       Minecraft version folder under versions/ (default: the gradle.properties mc)
 --mod <id>|all       component(s) to re-version (required)
 --tag <tag>          override the auto-computed tag
---curseforge         also upload to CurseForge (needs CURSEFORGE_API_KEY, CURSEFORGE_PROJECT_ID)
---modrinth           also upload to Modrinth (needs MODRINTH_TOKEN, MODRINTH_ID)
---no-ci-publish      do not dispatch the CI publish workflow
+--ci                 bump, commit, sign and push a tag, then stop; the release workflow builds it
 --dry-run            print the plan; change nothing
 --unsigned           do not GPG-sign the commit and tag
 --allow-dirty        skip the clean-working-tree check
 --no-push            commit and tag locally only
 --skip-build         reuse the existing dist/ instead of rebuilding
 --no-daemon          do not reuse a Gradle daemon (slower; reproduces a CI-like cold build)
---local-only         build and stage the jars locally only: no commit, tag, push, GitHub release or
-                     platform/CI publishing. versions.properties is still bumped so the local jars
-                     carry the next version; undo with `git checkout -- versions.properties`.
+--local-only         build and stage the jars locally only: no commit, tag, push or GitHub release.
+                     versions.properties is still bumped so the local jars carry the next version;
+                     undo with `git checkout -- versions.properties`.
 ```
 
 ### Testing a change without publishing
@@ -104,15 +110,14 @@ mapping jars open and the next build then fails with `FileSystemException: ... b
 process`. If you run Gradle by hand and hit that error, `./gradlew --stop` releases the lock. The
 daemon is reused between the invocations of a single release, so the cost is one cold start per run.
 
-## Release from CI instead
+## Retrying a release
 
-Actions → **Release** → Run workflow, or comment `/release-all` on an issue/PR, choosing the
-Minecraft version. CI follows the same bump/tag rules, builds the same staged groups, and then
-publishes to CurseForge/Modrinth in the same run. CI cannot sign, so its tags are unsigned. See
-**Enabling CI publishing** in `PROJECT-GUIDE.md` for the secrets, variables and layout.
+Actions → **Release** → Run workflow, entering the **existing** tag. This rebuilds and republishes
+that version without bumping it, which is how a failed run is retried without spending a new version
+number. The workflow deletes and re-uploads the release assets it owns, so a retry is not additive.
 
-The `release: published` trigger re-publishes an existing release through `publish-release.yml`
-(used when `tools/release.py` built the release locally and asked CI to publish it).
+Note that the tag is the only signed part. The version-bump commit and the tag are both made on the
+maintainer's machine precisely so the private key never has to exist in CI.
 
 ## No `origin` remote yet?
 

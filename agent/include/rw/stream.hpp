@@ -93,6 +93,11 @@ public:
     static std::optional<SocketStream> listen(const std::string& address, uint16_t port,
                                              uint16_t* bound_port);
 
+    // The address of the machine at the other end, as a dotted quad, or an empty string if it
+    // cannot be determined. The agent needs this to answer "is this peer me?", which is a question
+    // about the connection and not about anything the peer said about itself.
+    std::string remote_address() const;
+
     // Non-blocking. POLLIN is signalled when a message's worth of bytes may be available;
     // has_message_available() does the read_exact loop that decides that.
     bool has_message_available();

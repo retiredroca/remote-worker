@@ -56,6 +56,9 @@ enum class ErrorCode : uint16_t {
     // Two live agents claimed the same id. The registry is keyed on that id, so
     // allowing it would silently hand the controller an arbitrary machine.
     DuplicateEndpoint = 8,
+    // The controller is on this machine. A remote session to yourself is not a remote session, and
+    // the usual case is the mod and the agent sharing a computer.
+    SelfConnection = 9,
 };
 enum class CloseReason : uint16_t { Client = 0, Agent = 1, Error = 2, Replaced = 3 };
 enum class CaptureMode : uint8_t { Unknown = 0, Interactive = 1, Locked = 2 };

@@ -1,0 +1,11 @@
+{
+  "item.remote-worker.tablet": "Remote Tablet",
+  "item.remote-worker.tablet.tip": "Right-click to view a machine running the agent",
+  "screen.remote-worker.tablet": "Remote Worker",
+  "screen.remote-worker.connect": "Connect",
+  "screen.remote-worker.no_endpoints": "No machines configured",
+  "screen.remote-worker.status.opened": "Session open",
+  "screen.remote-worker.status.no_capture": "That agent cannot capture yet",
+  "screen.remote-worker.status.refused": "The agent refused",
+  "screen.remote-worker.status.unreachable": "Could not reach the agent"
+}

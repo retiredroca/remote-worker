@@ -72,6 +72,9 @@ public final class Protocol {
     /** Two live agents claimed the same id. The registry is keyed on that id, so allowing it
      *  would silently hand the controller an arbitrary machine. */
     public static final int ERROR_DUPLICATE_ENDPOINT = 8;
+    /** The controller is on the machine the agent runs on. A remote session to yourself is not a
+     *  remote session, and the usual case is the mod and the agent sharing a computer. */
+    public static final int ERROR_SELF_CONNECTION = 9;
 
     public static final int CLOSE_CLIENT = 0;
     public static final int CLOSE_AGENT = 1;

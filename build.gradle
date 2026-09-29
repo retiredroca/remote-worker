@@ -155,8 +155,8 @@ tasks.register('publishLibrary') {
 //
 // Two build systems now, so this is where the hand-off happens and where the release artifact is
 // NAMED. Naming lives here rather than in CMake deliberately: the name has to carry the version
-// stamp, which only Gradle knows, and it is the allowlist in tools/release.py and
-// .github/workflows/release-mod.yml that both sides must agree with. One owner for the name.
+// stamp, which only Gradle knows, and it is the allowlist in tools/release.py and the platform list
+// in .github/workflows/release-ci.yml that both sides must agree with. One owner for the name.
 def cppBuildDir = layout.buildDirectory.dir('cpp')
 def cppStaged = cppBuildDir.map { it.dir('staged') }
 def cppSource = file('CMakeLists.txt')

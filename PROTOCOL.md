@@ -241,6 +241,31 @@ this.
 `AgentBusy` is likewise only ever sent after a credential has been accepted, so a caller with no key
 cannot learn whether a machine is in use.
 
+### A machine cannot view itself
+
+A remote session to the machine it is running on is not a remote session, and the ordinary way that
+happens is mundane: someone installs the mod and the agent on one computer, tells the mod to
+connect to `127.0.0.1`, and gets a screen showing the desktop they are already looking at. It is also
+an odd thing to *want* -- a second copy of the mod on the same box, to watch yourself.
+
+So the agent refuses it, with `SelfConnection` (code 9), and the check is:
+
+- **on the agent, after the credential.** The agent is the only party that can answer it: a peer
+  cannot be asked whether it is local, and a controller can be a hand-written client that does not
+  check. The refusal goes after authentication, for the same reason `AgentBusy` does -- an answer
+  that depends only on who is asking is a way to learn the agent's policy without a key.
+- **on the controller, before the socket is opened.** The mod refuses a loopback address outright, so
+  the player gets a sentence explaining why instead of a connect that fails or a round trip. This is
+  a courtesy. The agent's refusal is the rule, and it is the one that holds.
+
+The agent decides "this is me" from the **peer address of the connection**, never from anything the
+peer said about itself: the address is either loopback, or one of this host's own addresses
+(resolved from its hostname). An address that cannot be determined is treated as *not* local, because
+refusing there would break every session on a platform where the lookup fails.
+
+`agent_test` covers the refusal from a loopback peer with a valid key, and that a local peer with a
+*wrong* key still gets `AuthFailed` rather than the policy answer.
+
 ### What is still unauthenticated
 
 **The connection, before `OPEN_SESSION`.** `HELLO` checks only the protocol range, so any host that

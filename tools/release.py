@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """Local release driver.
 
-Builds the release jars, commits the version bump, creates the GitHub tag + release, and then asks
-CI to publish that release to CurseForge/Modrinth.
+The normal path is `--ci`: bump the version, commit, create a *signed* tag, push it, and stop. The
+tag is the hand-off -- .github/workflows/release-ci.yml builds the mod jars and one native agent
+binary per platform, tests them, and creates the GitHub release. The private key never leaves this
+machine, and CI reads the version committed here rather than re-stamping it.
 
-Typical use:
+    python tools/release.py --mod all --ci             # the release path
+    python tools/release.py --mod all --ci --dry-run
 
-    python tools/release.py --mod all                 # build here, CI publishes it
-    python tools/release.py --mod all --dry-run
-    python tools/release.py --mod all --curseforge --modrinth
+This project does not publish to CurseForge or Modrinth; that came from the template it was
+generated from. The --curseforge / --modrinth / --no-ci-publish flags and the publishing code behind
+them have been removed, along with the template workflows that existed only to call them.
 
-By default the GitHub release happens and then the publish-only workflow
-(.github/workflows/publish-release.yml) is dispatched to upload the jars to CurseForge/Modrinth;
---no-ci-publish skips that. Passing --curseforge / --modrinth uploads from this machine instead,
-reading CURSEFORGE_API_KEY / MODRINTH_TOKEN from the environment, and marks the release so a CI run
-would skip it. The tag is a single series `v<api 3 parts>.<stamp>` (e.g. `v1.0.2.26091512`).
+The classic local path (without --ci) still builds and publishes a GitHub release from this machine,
+which can only ever produce the *host* platform's agent binary. It is kept as a single-platform
+fallback.
+
+The tag is a single series `v<api 3 parts>.<stamp>` (e.g. `v1.0.2.26091512`).
 
 Component ids come from the project's own modules (versions/<mc>/*/module.properties), so the
 `--mod` choices and the bundle names are never hardcoded here.
@@ -35,7 +38,6 @@ import versioning
 
 ROOT = Path(__file__).resolve().parent.parent
 VERSIONS = ROOT / "versions.properties"
-STATE = ROOT / "release-state.properties"
 DIST = ROOT / "dist"
 UA = "mod-template-release"
 
@@ -58,10 +60,10 @@ ALLOWED_JAR = re.compile(r"^[A-Za-z0-9_-]+-[0-9][0-9.]*-(fabric|neoforge|univers
 # version as the mod, and the platform is named rather than implied, because a download page has to
 # be able to tell a Windows user which file to take.
 #
-# Built and shipped by this script, not by CI. CI's publish mode downloads the jars off the GitHub
-# release to hand to mc-publish, and CurseForge/Modrinth only ever want the jar; a release started
-# from the Actions tab therefore ships no binary, which is a property of that path rather than a
-# defect. Releasing from here is the supported way to ship one.
+# Built and shipped by CI, on the --ci path, one binary per platform. This script only ever stages
+# the host platform's, because a local build cannot produce a binary for a platform it is not
+# running on -- which is the reason the whole build moved to CI. See GOTCHAS.md, "This project
+# releases differently from the other template projects".
 ALLOWED_BINARY = re.compile(
     r"^remote-worker-[0-9][0-9.]*-[a-z0-9]+-(x86_64|arm64)(\.exe)?$")
 
@@ -433,7 +435,7 @@ def gh_request(method, url, token, data=None, content_type="application/vnd.gith
         return e.code, e.read().decode()
 
 
-def github_release(token, tag, target, body, dry):
+def github_release(token, tag, target, dry):
     if dry:
         print(f"  [dry-run] create GitHub release {tag} at {target}")
         return {"id": 0, "upload_url": ""}
@@ -441,7 +443,7 @@ def github_release(token, tag, target, body, dry):
         "tag_name": tag,
         "target_commitish": target,
         "name": tag,
-        "body": body,
+        "body": "",
         "draft": False,
         "prerelease": False,
     })
@@ -470,46 +472,6 @@ def upload_assets(token, release_id, dry):
             log(f"uploaded {asset.name} ({resp.status})")
 
 
-def dispatch_publish_ci(token, tag, mc, dry):
-    """Ask the publish-only workflow to upload this release to CurseForge/Modrinth.
-
-    Best-effort: by now the release is public, so a failure warns and prints the manual fallback
-    instead of aborting the whole run.
-    """
-    workflow = "publish-release.yml"
-    url = f"https://api.github.com/repos/{repo_slug()}/actions/workflows/{workflow}/dispatches"
-    page = f"https://github.com/{repo_slug()}/actions/workflows/{workflow}"
-    ref = current_branch()
-    if dry:
-        print(f"  [dry-run] POST {url} ref={ref} tag={tag} minecraft={mc}")
-        return
-    status, resp = gh_request("POST", url, token, {"ref": ref, "inputs": {"tag": tag, "minecraft": mc}})
-    if status in (200, 204):
-        log(f"CI will publish {tag} to CurseForge/Modrinth: {page}")
-    else:
-        log(f"could not start the publish workflow ({status}): {resp}")
-        log(f"  publish by hand instead: {page} -> Run workflow -> tag {tag}")
-
-
-# --- release-state.properties -------------------------------------------------------
-
-
-def set_state(key, value):
-    lines = []
-    if STATE.exists():
-        lines = STATE.read_text(encoding="utf-8").splitlines()
-    pattern = re.compile(rf"^{re.escape(key)}=")
-    replaced = False
-    for i, line in enumerate(lines):
-        if pattern.match(line):
-            lines[i] = f"{key}={value}"
-            replaced = True
-            break
-    if not replaced:
-        lines.append(f"{key}={value}")
-    STATE.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
-
-
 # --- orchestration ------------------------------------------------------------------
 
 
@@ -520,10 +482,6 @@ def main():
                     help="which component is changing: a module id or 'all' (the tag is always "
                          "v<<library 3 parts>>.<stamp>)")
     ap.add_argument("--tag", default=None)
-    ap.add_argument("--curseforge", action="store_true", help="also upload to CurseForge")
-    ap.add_argument("--modrinth", action="store_true", help="also upload to Modrinth")
-    ap.add_argument("--no-ci-publish", action="store_true",
-                    help="do not ask CI to publish the release to CurseForge/Modrinth")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--unsigned", action="store_true", help="do not GPG-sign the commit and tag")
     ap.add_argument("--allow-dirty", action="store_true")
@@ -626,182 +584,19 @@ def main():
 
     if not slug:
         log("no 'origin' GitHub remote; release is local only (committed + tagged, not pushed)")
-        if args.curseforge or args.modrinth:
-            die("platform publishing needs a GitHub remote and CI; push the project first")
         log("done")
         return
 
-    # GitHub release against the tag we just pushed.
+    # GitHub release against the tag we just pushed. This is the single-platform fallback path:
+    # it can only carry the host platform's agent binary. The --ci path above is the real one,
+    # because a release built here cannot produce a binary for a platform that is not this machine.
     token = github_token()
     target = capture(["git", "rev-parse", "HEAD"]).strip()
-    marker = "<!-- mod-template:published -->" if (args.curseforge or args.modrinth) else ""
-    release = github_release(token, tag, target, marker, dry)
+    release = github_release(token, tag, target, dry)
     if release:
         upload_assets(token, release["id"], dry)
 
-    # CurseForge/Modrinth are published by CI by default. A local upload (--curseforge /
-    # --modrinth) also marks the release body, so a stray CI run would skip it anyway.
-    if not (args.no_ci_publish or args.curseforge or args.modrinth):
-        dispatch_publish_ci(token, tag, mc, dry)
-
-    if args.curseforge:
-        cf = os.environ.get("CURSEFORGE_API_KEY")
-        if not cf:
-            die("--curseforge needs CURSEFORGE_API_KEY in the environment")
-        cf_publish(cf, os.environ.get("CURSEFORGE_PROJECT_ID", ""), mc, changed, versions, dry)
-
-    if args.modrinth:
-        mr = os.environ.get("MODRINTH_TOKEN")
-        if not mr:
-            die("--modrinth needs MODRINTH_TOKEN in the environment")
-        modrinth_sync(mr, os.environ.get("MODRINTH_ID", ""), mc, changed, versions, dry)
-
-    if (args.curseforge or args.modrinth):
-        for name in changed:
-            if changed[name]:
-                set_state(f"{name}.version.{mc}", versions[name])
-        if commit([STATE], f"Release {tag}: update release state", dry, sign) and not args.no_push:
-            run(["git", "push", "origin", current_branch()], dry=dry)
-
     log("done")
-
-
-# --- CurseForge ---------------------------------------------------------------------
-
-
-def cf_headers(token):
-    return {"X-Api-Token": token, "Accept": "application/json", "User-Agent": UA}
-
-
-def cf_upload(token, project_id, file_path, metadata, dry, attempt_retries=5):
-    import time
-    boundary = "----modtemplateboundary"
-    meta_json = json.dumps(metadata).encode()
-    file_bytes = file_path.read_bytes()
-    body = b""
-    body += f"--{boundary}\r\n".encode()
-    body += b'Content-Disposition: form-data; name="metadata"\r\n'
-    body += b"Content-Type: application/json\r\n\r\n"
-    body += meta_json + b"\r\n"
-    body += f"--{boundary}\r\n".encode()
-    body += f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"\r\n'.encode()
-    body += b"Content-Type: application/java-archive\r\n\r\n"
-    body += file_bytes + b"\r\n"
-    body += f"--{boundary}--\r\n".encode()
-
-    url = f"https://minecraft.curseforge.com/api/projects/{project_id}/upload-file"
-    for attempt in range(1, attempt_retries + 1):
-        if dry:
-            print(f"  [dry-run] CurseForge upload {file_path.name}")
-            return
-        req = urllib.request.Request(url, data=body, method="POST")
-        for key, value in cf_headers(token).items():
-            req.add_header(key, value)
-        req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
-        try:
-            with urllib.request.urlopen(req, timeout=900) as resp:
-                log(f"CurseForge upload {file_path.name} ({resp.status})")
-                return
-        except urllib.error.HTTPError as e:
-            log(f"CurseForge upload attempt {attempt} failed for {file_path.name}: {e.read().decode()}")
-        except urllib.error.URLError as e:
-            log(f"CurseForge upload attempt {attempt} failed for {file_path.name}: {e}")
-        if attempt < attempt_retries:
-            time.sleep(15)
-    die(f"CurseForge upload gave up on {file_path.name}")
-
-
-def cf_publish(token, project_id, mc, changed, versions, dry):
-    """Upload the universal jars of the components that changed.
-
-    CurseForge files are added, never replaced, so the caller prunes older files on the site.
-    """
-    if not project_id:
-        die("--curseforge needs CURSEFORGE_PROJECT_ID in the environment")
-    mc_dir = ROOT / "versions" / mc
-    default_loader = "Server"
-    java_versions = versioning.load_props(mc_dir / "version.properties").get("java_version", "21")
-    uploaded = 0
-    for name, is_changed in changed.items():
-        if not is_changed:
-            continue
-        jar = DIST / f"{name}-{versions[name]}-universal.jar"
-        if not jar.exists():
-            log(f"skip CurseForge: {jar.name} not in dist/")
-            continue
-        metadata = {
-            "changelog": (DIST / "changelog.md").read_text(encoding="utf-8") if (DIST / "changelog.md").exists() else "",
-            "changelogType": "markdown",
-            "displayName": f"{name} {versions[name]}",
-            "gameVersions": [mc, java_versions, default_loader],
-            "releaseType": "release",
-        }
-        cf_upload(token, project_id, jar, metadata, dry)
-        uploaded += 1
-    if uploaded == 0:
-        log("CurseForge: nothing to upload")
-
-
-# --- Modrinth -----------------------------------------------------------------------
-
-
-def modrinth_sync(token, project, mc, changed, versions, dry):
-    if not project:
-        die("--modrinth needs MODRINTH_ID in the environment")
-    headers = {"Authorization": token, "User-Agent": UA}
-
-    def request(method, url, data=None, raw=None):
-        body = raw if raw is not None else (json.dumps(data).encode() if data is not None else None)
-        req = urllib.request.Request(url, data=body, method=method)
-        for key, value in headers.items():
-            req.add_header(key, value)
-        if raw is None:
-            req.add_header("Content-Type", "application/json")
-        try:
-            with urllib.request.urlopen(req, timeout=600) as resp:
-                payload = resp.read().decode()
-                return resp.status, (json.loads(payload) if payload else {})
-        except urllib.error.HTTPError as e:
-            return e.code, e.read().decode()
-
-    for name, is_changed in changed.items():
-        if not is_changed:
-            continue
-        jar = DIST / f"{name}-{versions[name]}-universal.jar"
-        if not jar.exists():
-            log(f"skip Modrinth: {jar.name} not in dist/")
-            continue
-        version_number = versions[name]
-        if dry:
-            print(f"  [dry-run] Modrinth create version {name} {version_number}")
-            continue
-        data = {
-            "name": f"{name} {version_number}",
-            "version_number": version_number,
-            "project_id": project,
-            "game_versions": [mc],
-            "loaders": ["fabric", "neoforge"],
-            "version_type": "release",
-            "featured": False,
-            "dependencies": [],
-            "file_parts": [jar.name],
-        }
-        boundary = "----modtemplateboundary"
-        body = b""
-        body += f"--{boundary}\r\n".encode()
-        body += b'Content-Disposition: form-data; name="data"\r\n'
-        body += b"Content-Type: application/json\r\n\r\n"
-        body += json.dumps(data).encode() + b"\r\n"
-        body += f"--{boundary}\r\n".encode()
-        body += f'Content-Disposition: form-data; name="{jar.name}"; filename="{jar.name}"\r\n'.encode()
-        body += b"Content-Type: application/java-archive\r\n\r\n"
-        body += jar.read_bytes() + b"\r\n"
-        body += f"--{boundary}--\r\n".encode()
-        status, resp = request("POST", "https://api.modrinth.com/v2/version", raw=body)
-        if status in (200, 201):
-            log(f"Modrinth version {version_number} created ({resp.get('id')})")
-        else:
-            log(f"Modrinth upload failed ({status}): {resp}")
 
 
 if __name__ == "__main__":

@@ -18,13 +18,14 @@ Python's `zoneinfo` or, failing that, from the JDK's `java.time` (already requir
 
 ## `release.py`
 
-See `PROJECT-GUIDE.md` for building and adding Minecraft versions, and `RELEASE-GUIDE.md` for the
-release flow. Short version:
+Bumps the version, commits, creates a **signed** tag, pushes it, and stops. The tag triggers
+`release-ci.yml`, which builds the jars and one native agent binary per platform and creates the
+GitHub release. See `RELEASE-GUIDE.md` for the full flow.
 
 ```bash
-python tools/release.py --mod <id> --dry-run
-python tools/release.py --mod <id>
+python tools/release.py --mod <id> --ci --dry-run
+python tools/release.py --mod <id> --ci
 ```
 
-Platform tokens come from the environment only (`CURSEFORGE_API_KEY`, `MODRINTH_TOKEN`,
-`GITHUB_TOKEN` or the stored `github.com` git credential).
+The only credential it reads is `GITHUB_TOKEN`, or a stored `github.com` git credential. It signs the
+commit and tag with the local GPG key, so the private key never has to exist in CI.

@@ -27,7 +27,60 @@ namespace {
 constexpr uint16_t kMaxWidth = 3840;
 constexpr uint16_t kMaxHeight = 2160;
 
+// Is this dotted quad the loopback interface? 127.0.0.0/8 is entirely loopback, not just 127.0.0.1,
+// so comparing the whole first octet is both simpler and more correct than an equality test.
+bool is_loopback(const std::string& ipv4) {
+    return ipv4.rfind("127.", 0) == 0;
+}
+
+// The IPv4 addresses this machine answers to, resolved from its hostname.
+//
+// This is a best-effort list and deliberately so: a name that does not resolve, or a host with no
+// resolvable name, yields an empty list and the caller then falls back to the loopback test alone.
+// An unresolvable hostname must not turn into "every peer is me", which would refuse every remote
+// session on a machine whose name is not in DNS.
+std::vector<std::string> local_addresses() {
+    std::vector<std::string> found;
+    char host[256] = {0};
+    if (::gethostname(host, sizeof(host) - 1) != 0) {
+        return found;
+    }
+    addrinfo hints{};
+    hints.ai_family = AF_INET;  // the agent only ever listens on IPv4; see SocketStream::listen
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo* results = nullptr;
+    if (::getaddrinfo(host, nullptr, &hints, &results) != 0 || results == nullptr) {
+        return found;
+    }
+    for (addrinfo* entry = results; entry != nullptr; entry = entry->ai_next) {
+        char text[INET_ADDRSTRLEN] = {0};
+        auto* in = reinterpret_cast<sockaddr_in*>(entry->ai_addr);
+        if (::inet_ntop(AF_INET, &in->sin_addr, text, sizeof(text)) != nullptr) {
+            found.emplace_back(text);
+        }
+    }
+    ::freeaddrinfo(results);
+    return found;
+}
+
 }  // namespace
+
+bool AgentServer::peer_is_this_host(const std::string& address) const {
+    if (address.empty()) {
+        // Could not be determined. Refusing here would break every session on a platform where
+        // getpeername fails, so this answers "no" and the session proceeds.
+        return false;
+    }
+    if (is_loopback(address)) {
+        return true;
+    }
+    for (const std::string& own : local_addresses()) {
+        if (own == address) {
+            return true;
+        }
+    }
+    return false;
+}
 
 AgentServer::AgentServer(AgentOptions options) : options_(std::move(options)) {
     if (options_.keyFile.empty()) {
@@ -105,9 +158,15 @@ void AgentServer::accept_pending() {
         auto peer = std::make_unique<Peer>();
         peer->channel = std::make_unique<FramedChannel>(*socket);
         peer->socket = std::move(socket);
+        peer->remoteAddress = peer->socket->remote_address();
+        // Read the address for the log line *before* the move. After `std::move(peer)` the pointer
+        // is null, and `peer->remoteAddress` would be a null dereference -- which is a crash on the
+        // first connection rather than on anything rare.
+        const std::string from = peer->remoteAddress;
         peers_.push_back(std::move(peer));
         connectionsAccepted_++;
-        log("controller connected");
+        log("controller connected from " +
+            (from.empty() ? std::string("an unknown address") : from));
     }
 }
 
@@ -186,6 +245,24 @@ void AgentServer::handle(Peer& peer, ReceivedFrame& frame) {
             std::optional<ErrorCode> refusal = authenticate(peer, request, "session");
             if (refusal) {
                 return;  // authenticate() has already sent the error and dropped the peer.
+            }
+
+            // Refuse a controller on this machine. The usual case is Minecraft and the agent
+            // sharing a computer, where "connect to 127.0.0.1" would otherwise produce a session
+            // showing the desktop you are already looking at -- and would invite someone to install
+            // a second copy of the mod to do it.
+            //
+            // After the credential, not before, for the reason AgentBusy is: an answer that depends
+            // only on who is asking is a way to learn the agent's policy without a key. This one
+            // says "you are here, and here is refused", which is the agent's business.
+            if (peer_is_this_host(peer.remoteAddress)) {
+                send_error(peer, ErrorCode::SelfConnection,
+                           "this controller is on the machine the agent runs on; a remote session "
+                           "needs a different computer");
+                log("refused a session from this machine (" + peer.remoteAddress +
+                    "); remote means remote");
+                drop_peer(peer, "self connection");
+                return;
             }
             // The key is good. The session is refused anyway, because there is no capture behind
             // this yet, and a controller left waiting on a screen that will never arrive looks

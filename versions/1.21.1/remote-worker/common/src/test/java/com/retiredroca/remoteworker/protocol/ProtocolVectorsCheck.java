@@ -9,6 +9,8 @@ import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 
+import com.retiredroca.remoteworker.credential.KeyCodec;
+
 /**
  * Checks the shared codec against the vectors from {@code tools/protocol_vectors.py}.
  *
@@ -121,6 +123,67 @@ public final class ProtocolVectorsCheck {
             System.exit(1);
         }
         System.out.println("protocol conformance OK");
+        checkKeyIdentity();
+    }
+
+    /**
+     * Checks the machine id the mod derives from a key against the value the C++ agent derives from
+     * the same key.
+     *
+     * <p>These are two independent implementations of one wire-visible value: the id travels in
+     * HELLO_ACK and in every OPEN_SESSION, so a mod that computed it differently would address a
+     * machine by an id its agent refuses to answer to, and the symptom would be "no such endpoint"
+     * for a machine the user can see listed. The vectors do not cover it -- they cover the message
+     * <i>format</i>, and this is a derivation from a key -- so it is pinned here, against values
+     * taken from the C++ implementation.
+     *
+     * <p>These three ids are the expected outputs of {@code agent/src/credential.cpp}. If a change
+     * makes them differ, the C++ side is the one that is already released and on the wire, so it is
+     * the Java side that has to match.
+     */
+    private static void checkKeyIdentity() {
+        record Case(String key, String machineId) {
+        }
+        List<Case> cases = List.of(
+                new Case("rw1_BKRQJ734CTGK8F30ACBGBHSWA533ANF8", "bb343d83a840d63b"),
+                new Case("rw1_00000000000000000000000000000000", null),
+                new Case("rw1_ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ", null));
+
+        List<String> bad = new ArrayList<>();
+        for (Case c : cases) {
+            byte[] key = KeyCodec.decode(c.key);
+            if (key == null) {
+                bad.add("could not decode " + c.key);
+                continue;
+            }
+            if (!c.key().equals(KeyCodec.encode(key))) {
+                bad.add("re-encoding " + c.key + " gave " + KeyCodec.encode(key));
+            }
+            String derived = KeyCodec.machineId(key);
+            if (c.machineId() != null && !c.machineId().equals(derived)) {
+                bad.add("machine id for " + c.key + " is " + derived + ", expected " + c.machineId());
+            }
+            if (derived.length() != KeyCodec.MACHINE_ID_CHARS) {
+                bad.add("machine id for " + c.key + " is " + derived.length() + " chars");
+            }
+        }
+        // Lower case must decode: a key pasted through chat is often lower-cased on the way.
+        if (KeyCodec.decode("rw1_bkrqj734ctgk8f30acbgbhswa533anf8") == null) {
+            bad.add("a lower-cased key did not decode");
+        }
+        for (String junk : new String[] {"", "rw1_", "not-a-key", "rw1_!!", "rw1_0000000000000000000000000000000"}) {
+            if (KeyCodec.decode(junk) != null) {
+                bad.add("accepted a malformed key: '" + junk + "'");
+            }
+        }
+        if (!bad.isEmpty()) {
+            System.err.println("key identity FAILURE(S):");
+            for (String b : bad) {
+                System.err.println("  - " + b);
+            }
+            System.exit(1);
+        }
+        System.out.println("key identity OK (id derivation matches the C++ agent)");
     }
 
     private static void checkRoundTrip(String name, byte[] bytes, String expect,

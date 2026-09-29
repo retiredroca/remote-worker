@@ -1,7 +1,38 @@
 # Remote Worker
 
-A Minecraft mod for multiple Minecraft versions on **Fabric** and **NeoForge**, built from the
-multi-version template.
+Control another computer from inside Minecraft.
+
+Two pieces: a **mod** for Fabric and NeoForge, and a **native agent** that runs on the machine being
+viewed. A controller holds a list of endpoints and connects to each agent directly — no relay, no
+discovery, no port forwarding.
+
+## Status
+
+This is not yet usable end to end, and it is worth being precise about where it stops.
+
+| | state |
+|---|---|
+| Wire format and both codecs | **done** — a Java codec in the mod and a C++ codec in the agent, both checked against byte vectors generated from one normative script |
+| Agent: key minting and machine identity | **done** — `remote-worker keygen`, a 160-bit key per machine, and the `machine_id` derived from it |
+| Agent: authentication | **done** — the key gates every session, compared in constant time, and the agent refuses to start without one |
+| Agent: capture and encode | **not started** — the agent authenticates a controller and then **refuses the session** with `UnsupportedCapture`, rather than opening one that would never produce a frame |
+| Tablet item | **done** — craftable, right-click opens the endpoint screen |
+| Mod: connect and authenticate | **done** — connects to an agent, sends `HELLO` and `OPEN_SESSION`, and reports exactly what came back |
+| Mod: video, input | **not started** — no frame rendering, and nothing sends input to the agent |
+| Transport encryption | **not started** — see the warning under [The agent](#the-agent-c) |
+
+So a release today gives you a **working agent** and a **mod that can find it, authenticate, and open
+a session request** — and then the agent answers `UnsupportedCapture`, because the capture backend is
+the missing half. You can see the whole handshake work, end to end, and watch it stop at the one
+place that is not written yet.
+
+The tablet item is registered, craftable, and opens a screen listing the machines configured in
+`config/remote-worker/endpoints.json` with a Connect button each. It shows the agent's real answer
+rather than a progress spinner that never resolves.
+
+**A machine cannot view itself.** The agent refuses a controller on the same machine with
+`SelfConnection`, and the mod refuses a loopback address before it opens a socket. The agent's check
+is the one that holds — see [The agent](#the-agent-c) and `PROTOCOL.md` §3.
 
 ## Build
 
@@ -12,6 +43,38 @@ multi-version template.
 
 > Gradle 8.14 must run on JDK 17–23 (the example targets Java 21). If your default `java` is newer,
 > point `JAVA_HOME` at a JDK 21 or set `org.gradle.java.home` in `gradle.properties`.
+
+## The tablet
+
+Right-click it to open the endpoint screen: the machines you have configured, a Connect button each,
+and whatever the agent said when you last tried.
+
+A machine is added by editing `config/remote-worker/endpoints.json`:
+
+```json
+[
+  {
+    "label": "the office box",
+    "host": "192.168.1.50",
+    "port": 47311,
+    "key": "rw1_BKRQJ734CTGK8F30ACBGBHSWA533ANF8"
+  }
+]
+```
+
+The **machine id is not in the file, and does not need to be**: the mod derives it from the key with
+the same function the agent uses, so an endpoint cannot be configured with an id that disagrees with
+its own key. If you rotate a key, delete the endpoint and re-add it.
+
+`host` must not be this machine. `localhost` and `127.x.x.x` are refused by the mod before it opens a
+socket, and by the agent as `SelfConnection` — see below.
+
+> The keys are stored in the clear in this file. Anyone who can read it can view every machine listed
+> in it. It is the same deliberate simplification the agent makes with its own key file, and the
+> piece most worth revisiting: this belongs in the OS credential store, which each loader exposes
+> differently and neither has been done yet.
+
+Adding an endpoint from inside the game is the obvious next step and is not built.
 
 ## The agent (C++)
 
@@ -30,12 +93,18 @@ ctest --test-dir build-cpp -C RelWithDebInfo --output-on-failure
 ./build-cpp/bin/RelWithDebInfo/remote-worker agent
 ```
 
-`ctest` runs four things: the same wire-format vectors the Java check uses against the C++ codec, a
+`ctest` runs three things: the same wire-format vectors the Java check uses against the C++ codec, a
 credentials test, and an agent test that drives a real controller peer over loopback and asserts
 what the agent accepts and refuses.
 
-**The agent is the whole product.** A controller holds a list of endpoints and connects to each agent
-directly; there is no relay and no discovery — an endpoint is configured, not found.
+**What you will see today.** `keygen` prints a machine id and a key, and `agent` starts and listens.
+Nothing can drive it yet, because the mod has no networking: a controller that connects today is
+authenticated and then refused with `UnsupportedCapture`, and the agent logs why. That is the
+intended behaviour rather than a stub — a controller left waiting on a screen that never arrives
+cannot tell "not implemented" from "broken", so the agent says which it is.
+
+**A controller holds a list of endpoints** and connects to each agent directly; there is no relay
+and no discovery. An endpoint is configured, not found.
 
 **There is no transport encryption.** Anything watching the wire can read the frames, and the agent
 has no transport authentication, so it announces its machine id to anything that connects to the
@@ -52,22 +121,15 @@ has the reasoning in full.
 
 ### Building for Linux and macOS
 
-> **Unverified.** Everything below is written from the source's own platform guards, not from a
-> build that has happened. No Linux or macOS binary has been produced or tested, and no release has
-> ever contained one. Treat the commands as a starting point to try, not as instructions known to
-> work.
+The source compiles on all three platforms: `stream.cpp`, `agent.cpp` and `credential.cpp` guard
+their platform sections with `_WIN32`, `generate_token()` reads `/dev/urandom` off Windows, and the
+key file defaults to `$HOME/.config/remote-worker/`.
 
-The source is written to compile on both: `stream.cpp`, `agent.cpp` and
-`credential.cpp` guard their platform sections with `_WIN32`, `generate_token()` reads
-`/dev/urandom` off Windows, and the key file defaults to `$HOME/.config/remote-worker/`. Those
-`#else` branches are unexercised, and the POSIX socket code is the most likely thing to need
-fixing.
-
-What has and has not been checked: every source file compiles clean under GCC with
-`-std=c++20 -Wall -Wextra -Wpedantic`, so the code is not MSVC-only. That is a **MinGW** build
-(`x86_64-w64-mingw32`), which means it exercised the `_WIN32` branches and left every `#else` branch
-untouched — it is evidence about the C++, not about POSIX. The socket layer in particular has never
-been compiled where those branches are live.
+**Those POSIX branches are now compiled and tested on every release**, which is the only reason they
+are trustworthy. They were not always: the first CI run of the release workflow failed three times
+in a row on `stream.cpp` (missing `<netdb.h>`), `credential.cpp` (`std::chmod` where libstdc++ has
+only `::chmod`) and a `#` that had lost a slash in a scripted comment. A local MSVC build cannot see
+any of that, because it never compiles a `#ifndef _WIN32` branch.
 
 The `cmake` and `ctest` commands above are the same on both platforms, minus `--config`. Linux:
 
@@ -90,19 +152,21 @@ ctest --test-dir build-cpp --output-on-failure
 ./build-cpp/bin/remote-worker keygen
 ```
 
-`ctest` passing on either platform is the real check, and the wire-format vectors and agent tests
-are the parts most worth trusting there, since they are platform-independent by design.
-
 Two things to expect beyond compilation:
 
 - **macOS will not run an unsigned build.** Gatekeeper refuses a binary that was not signed and
   notarised, and the error is "cannot be opened because the developer cannot be verified". There is
   no workaround that is also a release path: it needs a Developer ID certificate, and notarisation
   by Apple. `xattr -cr remote-worker` clears the quarantine flag for a local test, and is not
-  something to put in a download's instructions.
+  something to put in a download's instructions. **The released macOS binary is unsigned**, so this
+  applies to it too.
 - **A Linux agent is a real product decision, not just a build.** It has no capture backend yet, so
   it can pair and be refused for that, and nothing more. Capture on an unattended Linux box needs
   X11/Wayland and DRM in the picture, which is a different piece of work from producing a binary.
+
+**Intel macOS is not built.** `macos-latest` is arm64, and the `macos-13` x86_64 runner is being
+retired — one failing would block every release, since the workflow requires all of its platforms.
+Adding it means a row in the agent matrix *and* in the verify step's platform list.
 
 ## Protocol
 
@@ -157,25 +221,24 @@ is missing or misnamed, because a release with a jar-only set looks exactly like
 and the omission is invisible until someone looks for the binary. A platform that fails to build or
 fails `ctest` stops the whole release rather than shipping a partial set.
 
+**This project does not publish to CurseForge or Modrinth.** That came from the template it was
+generated from, along with three workflows and a set of `--curseforge` / `--modrinth` flags that
+existed only to drive them; all of it has been removed. A release here means the GitHub release.
+
 To publish a release that is not from the tag flow (e.g. a single-platform emergency build), the
 classic local path still exists and still uploads the host binary — but it can only ever produce the
 host platform's agent. Prefer `--ci`.
 
 A release started from the Actions tab rebuilds an **existing** tag (`workflow_dispatch` with the
-tag) without re-bumping anything.
-
-> **The CI workflow has not run yet.** It was written against the code and tested where it can be
-> (the release-set verification logic, and `-PskipCpp=true`, both exercised locally), but the
-> Actions run itself is unverified. The first `--ci` release is the real test; watch the run and
-> expect to iterate on it.
+tag) without re-bumping anything. This is how a failed run is retried without a new version.
 
 The staged build groups (`releaseLoaderJars`, `releaseLoaderBundles`, `releaseUniversal`,
 `releaseUniversalBundles`) each write their own directory; `releaseJars` unions them into
 `build/release/`, and the agent binary is staged *after* that, because `releaseJars` is a `Sync`
 task and would delete it.
 
-See `PROJECT-GUIDE.md` for building and the build layout, `RELEASE-GUIDE.md` for the template's
-local-release flow, and `AGENTS.md` for repository conventions.
+See `PROJECT-GUIDE.md` for building and the build layout, and `AGENTS.md` for repository
+conventions.
 
 ## Layout
 
@@ -190,16 +253,34 @@ versions/<mc>/version.properties        # Minecraft / loader / toolchain pins (c
 versions/<mc>/<module>/
 ├─ module.properties                    # id / name / group / authors / license / description
 ├─ common/                              # shared sources (no loader imports)
+│  ├─ src/main/java/.../RemoteWorker.java      # MOD_ID, id(), the platform accessor
+│  ├─ src/main/java/.../item/          # the tablet, and the holder that resolves it
+│  ├─ src/main/java/.../client/        # endpoints, the agent client, the tablet screen
+│  ├─ src/main/java/.../credential/    # key format + machine id derivation (matches the C++)
+│  ├─ src/main/java/.../platform/      # the seam each loader implements
+│  └─ src/main/resources/              # model, lang, texture, and the crafting recipe
 │  └─ src/main/java/.../protocol/       # wire-format codec, checked against the vectors
 │  └─ src/test/java/.../protocol/       # the conformance check, run from `check`
 ├─ fabric/                              # Loom build; compiles common into <group>.fabric.common
 └─ neoforge/                            # NeoGradle build; compiles common into <group>.neoforge.common
 tools/{versioning,release,protocol_vectors}.py  # version scheme, local release driver, protocol encoder
-tools/make_tablet_texture.py                    # regenerates the item texture, with an ASCII preview
+tools/make_tablet_texture.py                    # regenerates the tablet texture (not yet
+                                               #   registered to an item -- see Status)
 ```
 
 The two loader builds are separate (Loom and NeoGradle cannot share one Gradle project). The shared
 sources are compiled once per loader and merged into `<module>-<version>-universal.jar`, which works
 on both loaders.
 
-See the template's top-level README for the full workflow.
+## Where to read more
+
+| document | what is in it |
+|---|---|
+| `PROTOCOL.md` | the wire format, and why it is shaped the way it is — including why the key is the machine's identity and why it is not derived from a MAC or IP address |
+| `RELEASE-GUIDE.md` | the release flow, end to end |
+| `PROJECT-GUIDE.md` | building, adding a Minecraft version, the build layout, troubleshooting |
+| `GOTCHAS.md` | the traps in this repository, each with the check that proves it. Read this before changing the build, the release gate, or anything platform-guarded |
+| `AGENTS.md` | conventions for anyone (human or agent) working in this repository |
+
+The mod's build layout — two loader builds, shared sources, a universal jar — is the multi-version
+template's, and is described in `PROJECT-GUIDE.md`.

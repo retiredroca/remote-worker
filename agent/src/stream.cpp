@@ -171,6 +171,26 @@ void SocketStream::write_all(const uint8_t* buf, std::size_t len) {
     }
 }
 
+std::string SocketStream::remote_address() const {
+    if (fd_ < 0) {
+        return std::string();
+    }
+    sockaddr_in addr{};
+#ifdef _WIN32
+    int addrLen = sizeof(addr);
+#else
+    socklen_t addrLen = sizeof(addr);
+#endif
+    if (::getpeername(fd_, reinterpret_cast<sockaddr*>(&addr), &addrLen) != 0) {
+        return std::string();
+    }
+    char text[INET_ADDRSTRLEN] = {0};
+    if (::inet_ntop(AF_INET, &addr.sin_addr, text, sizeof(text)) == nullptr) {
+        return std::string();
+    }
+    return std::string(text);
+}
+
 bool SocketStream::has_message_available() {
     if (fd_ < 0) return false;
     PollFd pfd{};

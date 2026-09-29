@@ -177,66 +177,17 @@ metadata, so a listing is all that is needed.
 
 ## Release
 
-See **`RELEASE-GUIDE.md`**. Short version:
+This project does not publish to CurseForge or Modrinth. It has one release surface: the GitHub
+release, built by `.github/workflows/release-ci.yml` from a tag you sign locally. See the **Releases**
+section of `README.md` for the full flow, and `GOTCHAS.md` for why it differs from the template.
 
 ```bash
-python tools/release.py --mod <id> --dry-run   # preview, changes nothing
-python tools/release.py --mod <id>             # build + GitHub release; CI publishes
+python tools/release.py --mod <id> --ci --dry-run   # preview, changes nothing
+python tools/release.py --mod <id> --ci            # signed tag; CI builds and releases it
 ```
 
-## Enabling CI publishing
-
-The release workflows publish to GitHub (always), then CurseForge and Modrinth (only when
-configured). Everything is inert until the repository has the values below, so a project with none of
-them still gets GitHub releases.
-
-### Required secrets
-
-| Secret | Used for |
-|---|---|
-| `GITHUB_TOKEN` | provided automatically; GitHub release + commit-back |
-| `CURSEFORGE_API_KEY` | the CurseForge entry |
-| `MODRINTH_TOKEN` | Modrinth uploads (only when `PUBLISH_MODRINTH` is `true`) |
-
-The Modrinth token needs the `VERSION_CREATE` and `VERSION_WRITE` scopes (`VERSION_DELETE` is never
-used).
-
-### Repository variables
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `PUBLISH_MODRINTH` | unset (off) | set to `true` to publish to Modrinth |
-| `MODRINTH_ID` | `` from `create-project` | Modrinth project id or slug |
-
-### Placeholders substituted by `create-project`
-
-| Placeholder | Meaning |
-|---|---|
-| `` | numeric CurseForge project id |
-| `` | Modrinth project id/slug |
-| `fabric-api(required){modrinth:P7dR8mSH}{curseforge:306612}` | `mc-publish` dependencies block, e.g. `fabric-api(required){modrinth:P7dR8mSH}{curseforge:306612}` |
-
-### Layout
-
-- **CurseForge** — one entry per release, carrying the universal jar.
-- **Modrinth** — one project; each release is a new version and the previous one is archived (hence
-  the version id in `release-state.properties`).
-- **Pruning** — the CurseForge API can only *add* files. Archive superseded files on the website
-  (Files → … → Archive) after a release; CI cannot do it.
-
-### `release-state.properties`
-
-Committed state written back by CI: `mr.<component>.version.<mc>` (the Modrinth version id, so the
-previous version can be archived). Do not delete it; leaving the value empty is fine.
-
-### Triggers
-
-- **Actions → Release → Run workflow**, choosing the Minecraft version.
-- **Comment `/release-all`** on an issue or pull request.
-- `release: published` re-publishes an existing release (the `publish-release.yml` fallback).
-
-A changed version is committed back to `main` by CI (`Release <tag>: update release state`), so do
-not push to `main` while a release is running.
+Nothing needs configuring: the workflow needs no secrets beyond the automatic `GITHUB_TOKEN`, and no
+repository variables.
 
 ## Troubleshooting
 

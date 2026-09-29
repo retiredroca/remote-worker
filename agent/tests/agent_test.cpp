@@ -227,7 +227,10 @@ int main() {
         settle(fixture.agent);
     }
 
-    // The good case: authenticated, and then refused for the honest reason.
+    // The good key, from a controller on this machine -- which is what every test here is, because
+    // the test peer connects over loopback. The agent must refuse it: a remote session to yourself
+    // is not a remote session, and the everyday case this prevents is Minecraft and the agent
+    // sharing a computer.
     {
         Controller controller;
         controller.open(fixture.agent);
@@ -237,16 +240,34 @@ int main() {
         controller.open_session(machineId, fixture.key);
         settle(fixture.agent);
         auto error = expect_error(controller);
-        check(error.has_value(), "the correct key is accepted rather than refused");
-        check(error && error->code == static_cast<uint16_t>(rw::ErrorCode::UnsupportedCapture),
-              "then the session is refused with UnsupportedCapture, because there is no capture "
-              "backend yet");
-        check(error && error->message.find("no capture backend") != std::string::npos,
-              "and the message says why, instead of leaving a controller on a black screen");
+        check(error.has_value(), "a correct key is accepted rather than refused");
+        check(error && error->code == static_cast<uint16_t>(rw::ErrorCode::SelfConnection),
+              "but a controller on this machine is refused with SelfConnection, because remote "
+              "means remote");
+        check(error && error->message.find("different computer") != std::string::npos,
+              "and the message says why, rather than leaving a controller on a black screen");
         check(fixture.agent.authFailures() == 2,
               "a correct key is not counted as an auth failure, so the count means what it says");
         check(fixture.agent.sessionsOpened() == 0,
               "and no session is recorded as open, because none was");
+        controller.close();
+        settle(fixture.agent);
+    }
+
+    // A local controller is told nothing about the policy without a key: the SelfConnection answer
+    // comes after authentication, for the same reason AgentBusy does.
+    {
+        Controller controller;
+        controller.open(fixture.agent);
+        controller.greet();
+        settle(fixture.agent);
+        controller.read();
+        controller.open_session(machineId, rw::generate_token());
+        settle(fixture.agent);
+        auto error = expect_error(controller);
+        check(error && error->code == static_cast<uint16_t>(rw::ErrorCode::AuthFailed),
+              "a local controller with a wrong key still gets AuthFailed, not the policy answer");
+        check(fixture.agent.authFailures() == 3, "and the refusal is counted as an auth failure");
         controller.close();
         settle(fixture.agent);
     }

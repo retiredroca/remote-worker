@@ -97,16 +97,18 @@ installing anything or trusting a remembered path.
 ### A rename changes where names are built, not where they are read
 
 - **Symptom:** after renaming release jars, the build is green, every jar is produced, the count is
-  right, and the tests pass -- but CurseForge/Modrinth receive nothing, or receive a truncated
-  version. No step reports an error. In this project `--curseforge` published **zero** of five
-  bundles and logged `done`.
+  right, and the tests pass -- but the *upload* step receives nothing, or a truncated set. No step
+  reports an error, and the release is published anyway. (This was originally found against
+  CurseForge/Modrinth publishing; this project no longer publishes there, and the same failure now
+  lands on the release gate and the GitHub release upload.)
 
 - **Check that proves it:** take the names actually in `build/release/` and make every consumer
   resolve against them. For each of these, a wrong answer is a silent no-op:
   - every `glob()`/shell glob, and what `sorted()[0]` actually selects (3 files match, not 1)
   - every version-extraction `sed`/slice: print the extracted string and compare to the real version
   - every constructed path: assert `(dist / name).exists()` for all of them
-  - the workflow's own `allowed=` regex, run against the real names
+  - the release gate's own allowlists, run against the real names: `ALLOWED_JAR` in
+    `tools/release.py`, and the platform list in `release-ci.yml`'s verify step
   A count check cannot catch this: 30 stale jars and 30 current jars are both 30.
 
 - **Cause:** the rename updated the code that *builds* a name and left the code that *reads* one.
@@ -119,8 +121,9 @@ installing anything or trusting a remembered path.
 - **Fix:** one name per artifact built by one helper, and a glob that names the exact file rather
   than a directory plus `[0]`. Replace every `if jar.exists(): continue` on an upload path with
   `die(...)` -- a missing file there is a bug, not a reason to publish a partial set. Then add the
-  shape guard: `ALLOWED_JAR` in `tools/release.py` and `allowed=` in the workflow, both
-  `^[A-Za-z0-9_-]+-[0-9][0-9.]*-(fabric|neoforge|universal)\.jar$`. Dashes are required in the id
+  shape guard: `ALLOWED_JAR` in `tools/release.py` and `ALLOWED_BINARY` beside it, matching
+  `^[A-Za-z0-9_-]+-[0-9][0-9.]*-(fabric|neoforge|universal)\.jar$` and
+  `^remote-worker-[0-9][0-9.]*-[a-z0-9]+-(x86_64|arm64)(\.exe)?$`. Dashes are required in the id
   group for a `bundle-` prefix. Clear `dist/` after a rename so nothing can resolve a stale file.
 
 - **When auditing a rename, grep for the *old* shape, not for a word like `universal`.** A pattern
@@ -709,3 +712,94 @@ for job in d['jobs']:
 There is now a real test for the release workflow's own logic: the verify step is executed locally
 against a constructed `dist/` and its `$GITHUB_OUTPUT` checked, because it is Python with branches
 and it is the gate.
+
+## A rename leaves stale classes in the jar, and a green build ships them
+
+**Symptom:** after renaming `ExampleMod`/`ExampleModFabric`/`FabricPlatform` to `RemoteWorker`&co,
+the build was green, all tests passed, and the built jar contained **both** sets of classes:
+
+```
+com/retiredroca/remoteworker/fabric/ExampleModFabric.class
+com/retiredroca/remoteworker/fabric/common/ExampleMod.class
+com/retiredroca/remoteworker/fabric/common/platform/ExampleModPlatform.class
+... and the same three again under neoforge/
+```
+
+**Check that proves it, and it is a check on the *artifact*, not on the build:**
+
+```bash
+"$JAVA_HOME/bin/jar" tf build/release/<id>-<version>-universal.jar | grep -i ExampleMod
+```
+
+`./gradlew clean build` then produces zero. The build was right; the output directory was not.
+
+**Cause, two layers, both of which add and never remove:**
+
+- `relocateCommonSources` / `relocateLoaderSources` are **`Copy`** tasks into `build/generated/...`.
+  A removed source is not a deleted file as far as Gradle is concerned, so the generated copy of it
+  survives.
+- `compileJava` is incremental and, for a *removed* source, leaves the previously compiled
+  `.class` in `build/classes/java/main` for the rest of the build's life.
+
+**Why this is a rename-specific trap and not a general one.** Renaming a class changes the *name* a
+build writes but not the *set* of inputs, so nothing notices a file that is no longer produced. An
+edit that changes a file's contents invalidates it; a rename does not. This is the same failure as
+"A rename changes where names are built, not where they are read" above, one level down: there it
+was a consumer reading a stale name, here it is the build tree holding a stale class.
+
+**The fix in practice, and the rule.** `./gradlew clean` after a rename, before believing the jar.
+And when auditing any rename in this project, list the *built artifact* and grep it for the old
+name — never trust that a green build means the jar contains only current code. The release builds
+start from a fresh checkout, so CI is not exposed to this; a long-lived local build tree is.
+
+## The fix for the stale-class rename trap, and the two ways to get it wrong
+
+The entry above records the trap. This records the fix, because both wrong versions of it failed in
+ways that look like unrelated bugs.
+
+**The fix, in `gradle/mirror-sources.gradle`, applied by both loader builds.** Two parts, and neither
+is sufficient alone:
+
+1. The `relocate*` tasks are `Sync` and forced to re-run (`outputs.upToDateWhen { false }`), so the
+   generated mirror is reconciled on every build instead of only when its inputs change.
+2. `pruneStaleClasses` enforces the invariant directly — *a `.class` in the output must be declared
+   by a current source* — and runs after compilation and before the jar. It is forced to run every
+   time, because a stale class is exactly the state that no up-to-date check would ever notice.
+
+**Why part 1 alone does nothing, which is the first thing to check if the fix seems not to work.**
+Gradle skips an up-to-date task *entirely, actions included*. A `Sync` that is up-to-date never
+deletes anything. Verified: with `Sync` and nothing else, a planted stale file survived and its class
+still reached the jar. This is the trap in "The staged binary was deleted by its own Sync" playing
+outside the case that entry describes.
+
+**Why the prune must run after compilation, not before.** It decides whether a class has a source,
+and the mirror is rewritten by the relocate tasks that compilation itself triggers. Run first, it
+finds an empty or half-rewritten mirror, concludes every class is an orphan, and deletes the entire
+output. The symptom is `NoClassDefFoundError: ProtocolException` from `protocolCheck`, which points
+nowhere near the cause. The order is `compileJava`/`compileTestJava` → `pruneStaleClasses` → jar.
+
+**Why it matches on class *names* and not on directory roots.** Both directory approaches were tried
+and both are wrong here, for reasons specific to this build:
+- `sourceSet.java.srcDirs` holds *task* references (the source set is declared with
+  `srcDir(tasks.named('relocateCommonSources'))`), not directories. Read as file roots, every class
+  looks sourceless and the whole output is deleted.
+- A relocate task's `destinationDir` did not resolve to the mirror either.
+- The path on disk is not the class name: the loader builds **rewrite the package** while
+  relocating, so `.../remoteworker/...` on disk produces `...remoteworker.fabric.common....`.
+
+What works is reading the declared name out of each source (`package` line plus file name, straight
+from the compile task's own resolved `source` collection) and comparing it to the binary name in the
+class path. One rule, no path inference, and it cannot disagree with what the compiler will do.
+
+**And never read a task's properties at configuration time.** Doing so realises every task in the
+build and breaks Loom with `Cannot get IntermediaryMinecraftProvider before it has been setup`.
+
+**How to check this is working, without trusting it:**
+
+```bash
+D=versions/1.21.1/remote-worker/fabric/build/generated/common/com/retiredroca/remoteworker/fabric/common
+mkdir -p "$D"
+printf 'package com.retiredroca.remoteworker.fabric.common;\npublic final class ExampleMod {}\n' > "$D/ExampleMod.java"
+./gradlew build            # no clean
+jar tf build/release/*universal.jar | grep -c ExampleMod    # must be 0
+```
