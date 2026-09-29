@@ -16,6 +16,12 @@ dist/changelog.md
 dist/*.exe
 dist/**/*.exe
 
+# Local working notes. Untracked deliberately: these are notes to self, full of machine-specific
+# facts and half-finished reasoning, and they are not something a reader of this repository should be
+# handed. The durable version of each finding is in the code, its comment, or a test.
+AGENTS.md
+GOTCHAS.md
+
 # IDE
 .idea/
 *.iml

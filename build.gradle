@@ -261,6 +261,30 @@ def stageCppBinaries = tasks.register('stageCppBinaries', Copy) {
 // the omission only showed up by listing build/release.
 tasks.named('releaseJars') { finalizedBy stageCppBinaries }
 
+// Catches the one class of error a Windows build cannot see: a POSIX-only symbol used in a file
+// whose `#else` branch does not include the header declaring it. That has broken the Linux and macOS
+// CI legs twice, in two different files, and each time only CI found it.
+tasks.register('checkPosixIncludes') {
+    description = 'Checks that POSIX-only C++ symbols have the headers that declare them.'
+    group = 'verification'
+    def script = new File(rootProject.projectDir, 'tools/check_posix_includes.py')
+    def cppSources = fileTree(new File(rootProject.projectDir, 'agent/src')) { include '**/*.cpp' }
+    inputs.file script
+    inputs.files cppSources
+    outputs.upToDateWhen { false }
+    doLast {
+        def result = exec {
+            commandLine 'python', script.absolutePath
+            ignoreExitValue = true
+        }
+        if (result.exitValue != 0) {
+            throw new GradleException('tools/check_posix_includes.py failed -- see above')
+        }
+    }
+}
+
+tasks.named('check') { dependsOn 'checkPosixIncludes' }
+
 tasks.named('build') {
     dependsOn 'releaseJars'
 

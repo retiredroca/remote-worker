@@ -36,7 +36,6 @@ repo/                                     # in-repo maven for library modules (c
 tools/versioning.py                       # stamp / bump / tag / floor
 tools/release.py                          # local release driver
 dist/                                     # release artifacts + changelog (gitignored, .gitkeep tracked)
-AGENTS.md                                 # repository conventions for agents/contributors
 ```
 
 The two loader builds are separate projects (Loom and NeoGradle cannot share one Gradle project).
@@ -179,7 +178,7 @@ metadata, so a listing is all that is needed.
 
 This project does not publish to CurseForge or Modrinth. It has one release surface: the GitHub
 release, built by `.github/workflows/release-ci.yml` from a tag you sign locally. See the **Releases**
-section of `README.md` for the full flow, and `GOTCHAS.md` for why it differs from the template.
+section of `README.md` for the full flow, and `README.md` for why it differs from the template.
 
 ```bash
 python tools/release.py --mod <id> --ci --dry-run   # preview, changes nothing

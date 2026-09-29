@@ -13,8 +13,16 @@
 #include <ws2tcpip.h>
 #else
 #include <arpa/inet.h>
+// netdb.h declares addrinfo, getaddrinfo and freeaddrinfo, used by local_addresses() below to
+// resolve this host's own addresses. On Windows those come from ws2tcpip.h instead, and nothing on
+// POSIX includes it for you. This is the same missing include that broke stream.cpp once already;
+// this file gained POSIX code later and needed its own copy.
+#include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+// gethostname() lives here, and the include is likewise not transitive on Windows -- there it comes
+// from winsock2.h, which is why this has to be inside the #else.
+#include <unistd.h>
 #endif
 
 namespace rw {

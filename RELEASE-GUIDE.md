@@ -10,7 +10,8 @@ name gets a new version; nothing infers it from the files you changed.
 The local command no longer builds the release. It bumps the version, commits, creates a **signed**
 tag, pushes it, and stops; the workflow triggered by that tag does the building. That is not a
 stylistic choice — a native agent binary only exists for the platform it was compiled on, so a
-release built on one machine cannot produce a complete release. See `GOTCHAS.md`.
+release built on one machine cannot produce a complete release. See the **Releases** section of
+`README.md`.
 
 ## Version scheme
 

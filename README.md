@@ -237,8 +237,7 @@ The staged build groups (`releaseLoaderJars`, `releaseLoaderBundles`, `releaseUn
 `build/release/`, and the agent binary is staged *after* that, because `releaseJars` is a `Sync`
 task and would delete it.
 
-See `PROJECT-GUIDE.md` for building and the build layout, and `AGENTS.md` for repository
-conventions.
+See `PROJECT-GUIDE.md` for building and the build layout.
 
 ## Layout
 
@@ -279,8 +278,6 @@ on both loaders.
 | `PROTOCOL.md` | the wire format, and why it is shaped the way it is — including why the key is the machine's identity and why it is not derived from a MAC or IP address |
 | `RELEASE-GUIDE.md` | the release flow, end to end |
 | `PROJECT-GUIDE.md` | building, adding a Minecraft version, the build layout, troubleshooting |
-| `GOTCHAS.md` | the traps in this repository, each with the check that proves it. Read this before changing the build, the release gate, or anything platform-guarded |
-| `AGENTS.md` | conventions for anyone (human or agent) working in this repository |
 
 The mod's build layout — two loader builds, shared sources, a universal jar — is the multi-version
 template's, and is described in `PROJECT-GUIDE.md`.

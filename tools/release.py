@@ -62,8 +62,7 @@ ALLOWED_JAR = re.compile(r"^[A-Za-z0-9_-]+-[0-9][0-9.]*-(fabric|neoforge|univers
 #
 # Built and shipped by CI, on the --ci path, one binary per platform. This script only ever stages
 # the host platform's, because a local build cannot produce a binary for a platform it is not
-# running on -- which is the reason the whole build moved to CI. See GOTCHAS.md, "This project
-# releases differently from the other template projects".
+# running on. That is the reason the whole build moved to CI.
 ALLOWED_BINARY = re.compile(
     r"^remote-worker-[0-9][0-9.]*-[a-z0-9]+-(x86_64|arm64)(\.exe)?$")
 

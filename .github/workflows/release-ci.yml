@@ -1,7 +1,6 @@
 # The release. This is the whole build, and it runs here rather than on a maintainer's machine.
 #
-# Why this project does not release the way its sibling projects do is recorded in GOTCHAS.md under
-# "This project releases differently from the other template projects": a native agent binary is
+# Why this project does not release the way its sibling projects do: a native agent binary is
 # per-platform, and only a CI matrix has all the targets at once. The short version of the flow:
 #
 #   maintainer (signed, local)   bump the version, commit, `git tag -s`, push the tag
