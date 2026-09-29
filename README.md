@@ -119,6 +119,75 @@ one. The key is never derived from a MAC or IP address: those are public, so a c
 from one would be readable by anything on the wire, and duplicable across cloned VMs. `PROTOCOL.md` §3
 has the reasoning in full.
 
+### Installing the agent
+
+Every release carries one agent binary per platform, named
+`remote-worker-<version>-<os>-<arch>`, under [Releases](#releases).
+
+**macOS** — Homebrew is the easy path, and it is the reason a `.pkg` is *not* offered:
+
+```bash
+brew tap retiredroca/remote-worker https://github.com/retiredroca/remote-worker
+brew install retiredroca/remote-worker/remote-worker
+remote-worker keygen
+```
+
+The formula is [`homebrew-tap/Formula/remote-worker.rb`](homebrew-tap/Formula/remote-worker.rb).
+The fully-qualified name is used above because a bare `brew install remote-worker` is ambiguous with
+any other tap that happens to have a formula of the same name.
+
+> **The tap is unverified.** It was written from the Homebrew formula rules and the shasum is a real
+> hash of the real published asset, but it has never been run through `brew` — the machine that wrote
+> it is on Windows. If `brew tap` or `brew install` misbehaves, that is the first thing to fix. The
+> conventional home for a tap is a repository of its own named `homebrew-tap`, which would also make
+> the short `brew tap retiredroca/tap` form work; this directory is laid out to be moved there
+> unchanged.
+The released binary is **unsigned and not notarised** — no Developer ID certificate, which costs
+$99/year and a Mac. Homebrew downloads the file itself rather than a browser, so the quarantine
+attribute is not set and the binary should run without a Gatekeeper prompt. If your setup
+quarantines it anyway:
+
+```bash
+xattr -dr com.apple.quarantine "$(which remote-worker)"
+```
+
+**Everything else** — download, mark it executable, and give it a key:
+
+```bash
+curl -LO https://github.com/retiredroca/remote-worker/releases/download/v<version>/remote-worker-<version>-linux-x86_64
+chmod +x remote-worker-<version>-linux-x86_64
+./remote-worker-<version>-linux-x86_64 keygen
+./remote-worker-<version>-linux-x86_64 agent
+```
+
+Verify what you downloaded, since there is no signature on any platform:
+
+```bash
+shasum -a 256 remote-worker-<version>-linux-x86_64
+# compare against the asset digest GitHub shows on the release page
+```
+
+**Intel macOS is not built.** `macos-14` is arm64, and the `macos-13` x86_64 runner is being
+retired — one failing would block every release, since the workflow requires all of its platforms.
+Adding it means a row in the agent matrix *and* in the verify step's platform list.
+
+**A Linux agent is a real product decision, not just a build.** It has no capture backend yet, so it
+can pair and be refused for that, and nothing more. Capture on an unattended Linux box needs
+X11/Wayland and DRM in the picture, which is a different piece of work from producing a binary.
+
+#### Keeping the formula's shasum current
+
+The formula pins a `sha256`, so **a new release leaves it pointing at the old binary** and
+`brew upgrade` fails with a checksum mismatch until it is bumped. After a release:
+
+```bash
+brew bump-formula-pr --url=https://github.com/retiredroca/remote-worker --formula=remote-worker
+```
+
+That opens a pull request with the new version, url and shasum. If you would rather not run Homebrew,
+edit the three marked lines in the formula by hand — `version`, the `url` line, and `sha256` — and
+take the hash from the release page.
+
 ### Building for Linux and macOS
 
 The source compiles on all three platforms: `stream.cpp`, `agent.cpp` and `credential.cpp` guard
@@ -151,22 +220,6 @@ cmake --build build-cpp
 ctest --test-dir build-cpp --output-on-failure
 ./build-cpp/bin/remote-worker keygen
 ```
-
-Two things to expect beyond compilation:
-
-- **macOS will not run an unsigned build.** Gatekeeper refuses a binary that was not signed and
-  notarised, and the error is "cannot be opened because the developer cannot be verified". There is
-  no workaround that is also a release path: it needs a Developer ID certificate, and notarisation
-  by Apple. `xattr -cr remote-worker` clears the quarantine flag for a local test, and is not
-  something to put in a download's instructions. **The released macOS binary is unsigned**, so this
-  applies to it too.
-- **A Linux agent is a real product decision, not just a build.** It has no capture backend yet, so
-  it can pair and be refused for that, and nothing more. Capture on an unattended Linux box needs
-  X11/Wayland and DRM in the picture, which is a different piece of work from producing a binary.
-
-**Intel macOS is not built.** `macos-latest` is arm64, and the `macos-13` x86_64 runner is being
-retired — one failing would block every release, since the workflow requires all of its platforms.
-Adding it means a row in the agent matrix *and* in the verify step's platform list.
 
 ## Protocol
 
@@ -263,8 +316,9 @@ versions/<mc>/<module>/
 ├─ fabric/                              # Loom build; compiles common into <group>.fabric.common
 └─ neoforge/                            # NeoGradle build; compiles common into <group>.neoforge.common
 tools/{versioning,release,protocol_vectors}.py  # version scheme, local release driver, protocol encoder
-tools/make_tablet_texture.py                    # regenerates the tablet texture (not yet
-                                               #   registered to an item -- see Status)
+tools/make_tablet_texture.py                    # regenerates the tablet texture
+tools/check_posix_includes.py                  # catches a POSIX header a Windows build cannot see
+homebrew-tap/Formula/remote-worker.rb          # `brew tap retiredroca/remote-worker` (macOS, unsigned)
 ```
 
 The two loader builds are separate (Loom and NeoGradle cannot share one Gradle project). The shared
