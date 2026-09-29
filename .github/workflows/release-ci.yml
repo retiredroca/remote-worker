@@ -261,24 +261,3 @@ jobs:
           # with a typo in a path and zero assets, silently.
           fail_on_unmatched_files: true
           files: ${{ steps.verify.outputs.files }}
-
-      # CurseForge/Modrinth get the universal jar only -- never the .exe. fail-mode: warn: this
-      # project is not configured for either yet, and a platform-publish failure must not
-      # invalidate an otherwise-good GitHub release.
-      - name: Publish to CurseForge and Modrinth
-        uses: Kir-Antipov/mc-publish@v3.3
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          github-tag: ${{ env.RELEASE_TAG }}
-          modrinth-id: ${{ vars.MODRINTH_ID }}
-          modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
-          modrinth-files: dist/remote-worker-*-universal.jar
-          curseforge-id: ${{ vars.CURSEFORGE_PROJECT_ID }}
-          curseforge-token: ${{ secrets.CURSEFORGE_API_KEY }}
-          curseforge-files: dist/remote-worker-*-universal.jar
-          name: remote-worker
-          version: ${{ env.RELEASE_TAG }}
-          version-type: release
-          game-versions: ${{ env.MC_VERSION }}
-          loaders: fabric,neoforge
-          fail-mode: warn
