@@ -22,6 +22,11 @@ dist/*.jar
 AGENTS.md
 GOTCHAS.md
 
+# Local deploy script and session export (machine-specific Prism paths, WinSCP sessions)
+deploy.sh
+oc.sh
+session.json
+
 # IDE
 .idea/
 *.iml

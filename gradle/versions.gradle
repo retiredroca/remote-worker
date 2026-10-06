@@ -154,7 +154,13 @@ if (moduleFile != null) {
 // the root build's jar lookups and each loader build's archiveFileName both come from here, so the
 // two cannot drift apart. The id and version are parameters because the root project has no
 // module.properties above it, so mod_id/mod_version are undefined there.
-ext.jarFileName = { String id, String version, String loader -> "${id}-${version}-${loader}.jar" }
+//
+// The project abbreviation (abbrev in versions.properties) is prepended so jars from different
+// projects cannot collide when installed side by side. It is empty for a single-module project.
+def abbrev = (componentVersions.getProperty('abbrev') ?: '').trim()
+ext.jarFileName = { String id, String version, String loader ->
+    "${abbrev ? abbrev + '-' : ''}${id}-${version}-${loader}.jar"
+}
 
 // A dependency's floor range: [<major.minor.patch>,<upper>). Unused in a single-mod project, but
 // kept so the loader builds share one script shape with the multi template.
