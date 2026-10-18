@@ -308,11 +308,14 @@ tasks.register('checkPosixIncludes') {
 
 tasks.named('check') { dependsOn 'checkPosixIncludes' }
 
-tasks.named('build') {
-    dependsOn 'releaseJars'
-
-    // Sweep stale universal jars of earlier versions so build/libs only ever holds this build's.
-    // The per-loader builds sweep their own build/libs; this is the root's copy of the same guard.
+// Sweep the root build/libs down to this build's jars. The merged jar stages here, and nothing else
+// prunes it: the per-loader builds sweep their own directories, but this one is written by the release
+// groups themselves. It hangs off those groups rather than off `build`, because the release path -
+// tools/release.py, deploy.sh, the staged tasks - never runs `build`, so a guard attached there never
+// ran for a release and every stamp's jar stayed behind.
+tasks.register('sweepRootLibs') {
+    group = 'build'
+    description = 'Deletes jars in the root build/libs that this build did not produce.'
     doLast {
         def keep = moduleDirs.collect {
             def mid = loadModule(it).getProperty('id')
@@ -325,6 +328,16 @@ tasks.named('build') {
             }
         }
     }
+}
+
+// Before anything writes into that directory, whichever group is invoked.
+['releaseLoaderJars', 'releaseLoaderBundles', 'releaseUniversal',
+ 'releaseUniversalBundles'].each { name ->
+    tasks.named(name) { dependsOn 'sweepRootLibs' }
+}
+
+tasks.named('build') {
+    dependsOn 'releaseJars'
 }
 
 // Cleaning at the root cleans every included build too.
