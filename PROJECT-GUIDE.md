@@ -146,7 +146,7 @@ nothing else needs to know about it.
    name=My Third Mod
    group=com.retiredroca.remoteworker
    authors=Retired Roca
-   license=Apache-2.0
+   license=All-Rights-Reserved
    description=...
    library=false
    depends=api          # comma-separated ids this module needs
