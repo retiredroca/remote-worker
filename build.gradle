@@ -62,8 +62,8 @@ moduleDirs.each { moduleDir ->
 // A single-mod project has no bundles, so only the universal groups apply:
 //   1 releaseUniversal        build/release-universal/        (merged universal jars)
 //   2 releaseUniversalBundles build/release-universal-bundles/ (none here; no bundles.properties)
-// releaseLoaderJars / releaseLoaderBundles build the per-loader jars for one loader only
-// (-Ploader=fabric|neoforge). releaseJars is the ordered union of all four into build/release/.
+// releaseLoaderJars / releaseLoaderBundles build the per-loader jars and their sources for one loader
+// only (-Ploader=fabric|neoforge). releaseJars is the ordered union of all four into build/release/.
 def loaderFilter = (findProperty('loader') ?: '').toString().toLowerCase()
 def activeLoaders = loaderFilter ? [loaderFilter] : ['fabric', 'neoforge']
 
@@ -75,6 +75,13 @@ def loaderJarSources = { org.gradle.api.tasks.Sync t ->
             t.dependsOn gradle.includedBuild("${id}-${loader}").task(':build')
             t.from({ versionedJar("${versionRoot}/${moduleDir.name}/${loader}/build/libs/${jarFileName(id, modVersion, loader)}") }) {
                 rename { jarFileName(id, modVersion, loader) }
+            }
+            // The sources jar travels with the mod jar it belongs to. It is renamed to carry its
+            // loader here, and only here: both loaders name it <id>-<version>-sources.jar because
+            // that is what a maven consumer looks for, so flattening the two into one directory
+            // would collide. The release is the only place they sit side by side.
+            t.from({ versionedJar("${versionRoot}/${moduleDir.name}/${loader}/build/libs/${jarFileName(id, modVersion, 'sources')}") }) {
+                rename { jarFileName(id, modVersion, "${loader}-sources") }
             }
         }
     }
@@ -139,6 +146,11 @@ tasks.register('releaseJars', Sync) {
                         "${jarFileName(id, modVersion, loader)}")
                 if (jar == null) {
                     missing << "${id}-${loader}"
+                }
+                def sources = versionedJar("${versionRoot}/${moduleDir.name}/${loader}/build/libs/" +
+                        "${jarFileName(id, modVersion, 'sources')}")
+                if (sources == null) {
+                    missing << "${id}-${loader}-sources"
                 }
             }
         }

@@ -137,7 +137,18 @@ base {
 // is the remapped jar (the jar task's output goes to build/devlibs).
 tasks.named('jar') { archiveFileName = jarFileName(mod_id, mod_version, 'neoforge') }
 
-java.toolchain.languageVersion = JavaLanguageVersion.of(java_version)
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(java_version)
+    }
+    withSourcesJar()
+}
+
+// The sources jar is a release-shaped artifact too, so it takes the same name as the others -- with
+// the project abbreviation. Without this it keeps the bare archivesName, which is neither
+// standardized nor what the keep-set below expects. It is what the release stages alongside the mod
+// jar, so a release carries the sources for both loaders and not just for Fabric.
+tasks.named('sourcesJar') { archiveFileName = jarFileName(mod_id, mod_version, 'sources') }
 
 runs {
     configureEach {

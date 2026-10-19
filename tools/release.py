@@ -50,11 +50,14 @@ def die(msg):
     sys.exit(f"release: error: {msg}")
 
 
-# A release jar is <id>-<version>-<loader>.jar, matching jarFileName in gradle/versions.gradle.
+# A release jar is <id>-<version>-<kind>.jar, matching jarFileName in gradle/versions.gradle.
 # Matching the shape rather than a list of ids means a new module needs no edit here, and it rejects
 # every pre-rename shape (a leading loader, or a dot before the version), which a count check cannot.
-# The id group allows dashes so a `bundle-` prefix matches.
-ALLOWED_JAR = re.compile(r"^[A-Za-z0-9_-]+-[0-9][0-9.]*-(fabric|neoforge|universal)\.jar$")
+# The id group allows dashes so a `bundle-` prefix matches. A sources jar is the same shape with
+# `-sources` after its loader: that suffix exists only in the release, because both builds name their
+# sources jar <id>-<version>-sources.jar for a maven consumer, and flattening the two into one
+# directory would collide.
+ALLOWED_JAR = re.compile(r"^[A-Za-z0-9_-]+-[0-9][0-9.]*-(fabric|neoforge|universal)(-sources)?\.jar$")
 
 # The endpoint agent: the one thing that runs on a watched machine. Its version is the same stamped
 # version as the mod, and the platform is named rather than implied, because a download page has to
@@ -246,17 +249,22 @@ def bundle_definitions():
 
 
 def expected_jars(mc):
-    """How many jars the release set must contain: per-loader + universal + bundle variants.
+    """How many jars the release set must contain: per-loader + sources + universal + bundles.
 
-    Each module contributes one jar per loader plus one universal jar; each bundle contributes a
-    universal container plus one per-loader container, so three files per bundle.
+    Each module contributes one jar per loader, one sources jar per loader, and one universal jar;
+    each bundle contributes a universal container plus one per-loader container, so three files per
+    bundle. A bundle has no sources of its own: its sources are its members', which are already here.
     """
     ids = module_ids(mc)
     loaders = ["fabric", "neoforge"]
     loader_jars = len(ids) * len(loaders)
+    sources = len(ids) * len(loaders)
     universal = len(ids)
-    bundles = len(bundle_definitions())
-    return loader_jars + universal + bundles * (1 + len(loaders))
+    bundles = 0
+    bundles_file = ROOT / "bundles.properties"
+    if bundles_file.exists():
+        bundles = len([k for k in read_props(bundles_file) if k.startswith("bundle.")])
+    return loader_jars + sources + universal + bundles * (1 + len(loaders))
 
 
 def collect(mc, dry):
@@ -301,7 +309,7 @@ def verify(mc, dry):
     # would be copied into dist/ and published. Check the shape too.
     bad = [j for j in jars if not ALLOWED_JAR.match(j)]
     if bad:
-        die(f"unexpected files in dist/ (not <id>-<version>-<loader>.jar): {bad}")
+        die(f"unexpected files in dist/ (not <id>-<version>-<kind>.jar): {bad}")
     binaries = [p.name for p in non_jar_files(DIST)]
     if len(binaries) != 1:
         die(f"expected exactly 1 agent binary in dist/, found {len(binaries)}: {binaries}")
