@@ -186,6 +186,9 @@ processResources {
     inputs.property "loader_version", loader_version
     inputs.property "java_version", java_version
     inputs.property "mod_id", mod_id
+    inputs.property "mod_name", mod_name
+    inputs.property "mod_license", mod_license
+    inputs.property "mod_authors", mod_authors
 
     filesMatching("fabric.mod.json") {
         expand "version": project.version,
