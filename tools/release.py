@@ -38,12 +38,20 @@ import versioning
 
 ROOT = Path(__file__).resolve().parent.parent
 VERSIONS = ROOT / "versions.properties"
-DIST = ROOT / "dist"
+DIST_ROOT = ROOT / "dist"
 UA = "mod-template-release"
 
 
 def log(msg):
     print(f"release: {msg}")
+
+
+def default_mc():
+    return (read_props(ROOT / "gradle.properties").get("mc") or "1.21.1").strip()
+
+
+def dist_dir(mc):
+    return DIST_ROOT / mc
 
 
 def die(msg):
@@ -222,7 +230,7 @@ def build(mc, dry, no_daemon=False, stamp=None):
                      "publishMavenJavaPublicationToRepoRepository"], dry=dry)
     # Staged build (loader jars -> loader bundles -> universal -> universal bundles) as separate
     # invocations, so a failure names the layer that broke. The last one unions the staged dirs
-    # into build/release/ and republishes the libraries to ./repo.
+    # into build/release/<mc>/ and republishes the libraries to ./repo.
     # --refresh-dependencies: the floor range was just republished, so don't use a cached resolution.
     steps = [
         ["releaseLoaderJars"],
@@ -269,21 +277,20 @@ def expected_jars(mc):
 
 def collect(mc, dry):
     if not dry:
-        # Clear stale artifacts, but keep the tracked dist/.gitkeep.
-        DIST.mkdir(exist_ok=True)
-        for path in DIST.iterdir():
-            if path.name == ".gitkeep":
-                continue
+        # Clear this version's staged artifacts; the tracked dist/.gitkeep stays at the root.
+        out = dist_dir(mc)
+        out.mkdir(parents=True, exist_ok=True)
+        for path in out.iterdir():
             if path.is_dir():
                 shutil.rmtree(path)
             else:
                 path.unlink()
-        release = ROOT / "build" / "release"
+        release = ROOT / "build" / "release" / mc
         jars = sorted(release.glob("*.jar"))
         if not jars:
             die(f"no jars in {release}; did the build run?")
         for jar in jars:
-            shutil.copy2(jar, DIST)
+            shutil.copy2(jar, out)
         # The binary is required, not optional. A release with no agent in it looks exactly like a
         # successful release -- the jar count is right, the build was green -- and the omission is
         # only visible to someone who then cannot find the file to install. So it is checked here
@@ -293,38 +300,40 @@ def collect(mc, dry):
             die(f"no agent binary in {release}; did the C++ build run? "
                 f"(expected something like remote-worker-<version>-windows-x86_64.exe)")
         for binary in binaries:
-            shutil.copy2(binary, DIST)
+            shutil.copy2(binary, out)
     verify(mc, dry)
 
 
 def verify(mc, dry):
     if dry:
         return
-    jars = sorted(p.name for p in DIST.glob("*.jar"))
+    jars = sorted(p.name for p in dist_dir(mc).glob("*.jar"))
     expected = expected_jars(mc)
     if len(jars) != expected:
         die(f"expected {expected} release jars, found {len(jars)}: {jars}")
     # The count alone cannot tell a correct jar from a stale one: a set of pre-rename jars has the
-    # same length as the current set, so `build/release` leftovers from an earlier naming scheme
-    # would be copied into dist/ and published. Check the shape too.
+    # same length as the current set, so `build/release/<mc>` leftovers from an earlier naming
+    # scheme would be copied into dist/<mc>/ and published. Check the shape too.
     bad = [j for j in jars if not ALLOWED_JAR.match(j)]
     if bad:
-        die(f"unexpected files in dist/ (not <id>-<version>-<kind>.jar): {bad}")
-    binaries = [p.name for p in non_jar_files(DIST)]
+        die(f"unexpected files in dist/{mc}/ (not <id>-<version>-<kind>.jar): {bad}")
+    binaries = [p.name for p in non_jar_files(dist_dir(mc))]
     if len(binaries) != 1:
-        die(f"expected exactly 1 agent binary in dist/, found {len(binaries)}: {binaries}")
+        die(f"expected exactly 1 agent binary in dist/{mc}/, found {len(binaries)}: {binaries}")
     if not ALLOWED_BINARY.match(binaries[0]):
         die(f"unexpected agent binary name (want remote-worker-<version>-<os>-<arch>[.exe]): "
             f"{binaries[0]}")
     log(f"release set OK ({len(jars)} jars + {binaries[0]})")
 
 
-def changelog(tag, dry):
+def changelog(tag, mc, dry):
     if dry:
         return
-    DIST.mkdir(exist_ok=True)
+    dest = dist_dir(mc)
+    dest.mkdir(parents=True, exist_ok=True)
     try:
-        prev = capture(["git", "describe", "--tags", "--abbrev=0", "HEAD^"]).strip()
+        prev = capture(["git", "describe", "--tags", "--abbrev=0",
+                        "--match", f"v*-{mc}", "HEAD^"]).strip()
     except subprocess.CalledProcessError:
         prev = ""
     if prev:
@@ -332,15 +341,15 @@ def changelog(tag, dry):
         header = f"Changes since {prev}"
     else:
         log_range = ["HEAD"]
-        header = "Initial release"
+        header = f"Initial release for Minecraft {mc}"
     lines = [header, ""]
     for rng in log_range:
         out = capture(["git", "log", rng, "--no-merges", "--pretty=format:- %s (`%h`)"])
         if out.strip():
             lines.append(out.strip())
             break
-    (DIST / "changelog.md").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
-    log("wrote dist/changelog.md")
+    (dest / "changelog.md").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    log(f"wrote dist/{mc}/changelog.md")
 
 
 # A bundle's version is not computed here. Gradle decides it (1.0.0.<newest stamp among the
@@ -457,8 +466,8 @@ def github_release(token, tag, target, dry):
     return resp
 
 
-def upload_assets(token, release_id, dry):
-    assets = sorted(list(DIST.glob("*.jar")) + non_jar_files(DIST))
+def upload_assets(token, release_id, mc, dry):
+    assets = sorted(list(dist_dir(mc).glob("*.jar")) + non_jar_files(dist_dir(mc)))
     for asset in assets:
         if dry:
             print(f"  [dry-run] upload {asset.name}")
@@ -481,16 +490,18 @@ def upload_assets(token, release_id, dry):
 
 def main():
     ap = argparse.ArgumentParser(description="Build and publish a release locally.")
-    ap.add_argument("--mc", default="1.21.1", help="Minecraft version folder under versions/")
+    ap.add_argument("--mc", default=None,
+                    help="Minecraft version folder under versions/ (default: mc in gradle.properties)")
     ap.add_argument("--mod", required=True,
                     help="which component is changing: a module id or 'all' (the tag is always "
-                         "v<<library 3 parts>>.<stamp>)")
+                         "v<<library 3 parts>>.<stamp>-<mc>)")
     ap.add_argument("--tag", default=None)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--unsigned", action="store_true", help="do not GPG-sign the commit and tag")
     ap.add_argument("--allow-dirty", action="store_true")
     ap.add_argument("--no-push", action="store_true")
-    ap.add_argument("--skip-build", action="store_true", help="reuse the existing dist/")
+    ap.add_argument("--skip-build", action="store_true",
+                    help="reuse the existing dist/<mc>/")
     ap.add_argument("--no-daemon", action="store_true",
                     help="do not reuse a Gradle daemon (slower; reproduces a CI-like cold build)")
     ap.add_argument("--ci", action="store_true",
@@ -512,7 +523,7 @@ def main():
     args = ap.parse_args()
 
     dry = args.dry_run
-    mc = args.mc
+    mc = args.mc or default_mc()
     ensure_clean(args.allow_dirty)
 
     # --bump is a standalone, version-only operation: it writes versions.properties and stops. It
@@ -542,7 +553,12 @@ def main():
     # Dependent modules resolve a library through a floor range computed from versions.properties
     # at configuration time (see gradle/versions.gradle), so a bump needs no extra rewrite here.
 
-    tag = args.tag or versioning.tag(versions[primary], stamp)
+    if args.tag:
+        tag = args.tag
+        if not tag.endswith(f"-{mc}"):
+            die(f"tag {tag!r} must end with -{mc} (the Minecraft version)")
+    else:
+        tag = versioning.tag(versions[primary], stamp, mc)
     log(f"tag: {tag}")
 
     # In --ci mode nothing is built here: the tag is the hand-off, and the workflow triggered by
@@ -556,10 +572,10 @@ def main():
     else:
         verify(mc, dry)
     if not args.ci:
-        changelog(tag, dry)
+        changelog(tag, mc, dry)
 
     if args.local_only:
-        log(f"local-only: built the {tag} jars into build/release/ and dist/")
+        log(f"local-only: built the {tag} jars into build/release/{mc}/ and dist/{mc}/")
         log("no commit, tag, push, GitHub release or platform publishing was performed")
         log("versions.properties was bumped; undo with: git checkout -- versions.properties")
         return
@@ -598,7 +614,7 @@ def main():
     target = capture(["git", "rev-parse", "HEAD"]).strip()
     release = github_release(token, tag, target, dry)
     if release:
-        upload_assets(token, release["id"], dry)
+        upload_assets(token, release["id"], mc, dry)
 
     log("done")
 

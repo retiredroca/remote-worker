@@ -17,13 +17,19 @@ release built on one machine cannot produce a complete release. See the **Releas
 
 ```
 <major>.<minor>.<patch>.<yymmddhh>        e.g. 1.0.2.26091512
-v<major>.<minor>.<patch>.<yymmddhh>        e.g. v1.0.2.26091512   (the tag)
+v<major>.<minor>.<patch>.<yymmddhh>-<mc>   e.g. v1.0.2.26091512-1.21.1   (the tag)
 ```
 
 * the trailing `yymmddhh` stamp is bumped automatically, in the timezone this project was created
   with (see `TIMEZONE` at the top of `tools/versioning.py`);
 * the patch (3rd component) is edited by hand when a semantic bump is wanted;
-* two releases in the same hour produce the same version/tag — space them out or pass `--tag`.
+* tags carry the Minecraft version; CI derives the version folder from the tag suffix, and
+  previous-tag lookup only considers tags ending in `-<mc>`. The first release after this scheme
+  was introduced has no predecessor, so every component is treated as changed;
+* two releases of the same Minecraft version in the same hour produce the same version/tag — space
+  them out or pass `--tag`;
+* the platform version number is the mod version alone, so two Minecraft versions released in the
+  same hour still collide on CurseForge/Modrinth; space them out.
 
 Dependent modules ask for a library as a **floor range** `[<major.minor.patch>,<upper>)`, so an older
 library can never silently satisfy a newer dependent. `tools/release.py` rewrites that floor for you
@@ -80,13 +86,13 @@ made that way is incomplete for anyone else.
 ```
 --mc <version>       Minecraft version folder under versions/ (default: the gradle.properties mc)
 --mod <id>|all       component(s) to re-version (required)
---tag <tag>          override the auto-computed tag
+--tag <tag>          override the auto-computed tag (must end with -<mc>)
 --ci                 bump, commit, sign and push a tag, then stop; the release workflow builds it
 --dry-run            print the plan; change nothing
 --unsigned           do not GPG-sign the commit and tag
 --allow-dirty        skip the clean-working-tree check
 --no-push            commit and tag locally only
---skip-build         reuse the existing dist/ instead of rebuilding
+--skip-build         reuse the existing dist/<mc>/ instead of rebuilding
 --no-daemon          do not reuse a Gradle daemon (slower; reproduces a CI-like cold build)
 --local-only         build and stage the jars locally only: no commit, tag, push or GitHub release.
                      versions.properties is still bumped so the local jars carry the next version;
@@ -107,7 +113,7 @@ publishing anything:
 python tools/release.py --mod <id> --local-only --allow-dirty
 ```
 
-The jars land in `build/release/` and `dist/` (named with the next version stamp). When you are done
+The jars land in `build/release/<mc>/` and `dist/<mc>/` (named with the next version stamp). When you are done
 testing, `git checkout -- versions.properties` to undo the bump. A `--local-only` run leaves no
 commit, tag or release behind.
 

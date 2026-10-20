@@ -63,7 +63,7 @@ moduleDirs.each { moduleDir ->
 //   1 releaseUniversal        build/release-universal/        (merged universal jars)
 //   2 releaseUniversalBundles build/release-universal-bundles/ (none here; no bundles.properties)
 // releaseLoaderJars / releaseLoaderBundles build the per-loader jars and their sources for one loader
-// only (-Ploader=fabric|neoforge). releaseJars is the ordered union of all four into build/release/.
+// only (-Ploader=fabric|neoforge). releaseJars is the ordered union of all four into build/release/<mc>/.
 def loaderFilter = (findProperty('loader') ?: '').toString().toLowerCase()
 def activeLoaders = loaderFilter ? [loaderFilter] : ['fabric', 'neoforge']
 
@@ -113,11 +113,11 @@ tasks.register('releaseUniversalBundles', Sync) {
 // The union of the four staged directories, as one task.
 //
 // This was four hand-rolled copy tasks, and it was wrong in two ways that both showed up as a
-// stale build/release/ rather than as an error:
+// stale build/release/<mc>/ rather than as an error:
 //   - each one declared its OUTPUT directory but never its input, so `dependsOn` ordered the work
-//     without saying what the task read. Once build/release/ existed, Gradle found the output
+//     without saying what the task read. Once build/release/<mc>/ existed, Gradle found the output
 //     snapshot unchanged and skipped the copy permanently: a new version stamp landed in
-//     build/release-loader/ while build/release/ went on serving the previous stamp.
+//     build/release-loader/ while build/release/<mc>/ went on serving the previous stamp.
 //   - nothing removed what was no longer produced, so each earlier stamp accumulated there as well.
 // A Sync over all four directories fixes both: the inputs are declared, and the destination is
 // emptied of anything this task did not put there. Sync also cannot be four tasks sharing one
@@ -131,7 +131,7 @@ tasks.register('releaseJars', Sync) {
         dependsOn group
         from(group)
     }
-    into layout.buildDirectory.dir('release')
+    into layout.buildDirectory.dir("release/${mc}")
 
     // Fail loudly if any module jar is missing, rather than silently assembling an incomplete set: a
     // release built without one of its members is worse than a build that stops. Derived from the
@@ -241,7 +241,7 @@ def cppBuild = tasks.register('cppBuild', Exec) {
     onlyIf { !skipCpp }
 }
 
-// Copies the built binary into build/release/ under its release name, so everything the release
+// Copies the built binary into build/release/<mc>/ under its release name, so everything the release
 // publishes lives in one directory. Only the host platform is built here: cross-compiling all three
 // needs a runner per platform, which is a CI matrix, not a Gradle task.
 // The single file CMake stages, by platform. Named rather than globbed: see stageCppBinaries.
@@ -257,10 +257,10 @@ def renameName = { String name ->
 }
 
 def stageCppBinaries = tasks.register('stageCppBinaries', Copy) {
-    description = 'Stages the built C++ binaries into build/release with their release names.'
+    description = 'Stages the built C++ binaries into build/release/<mc> with their release names.'
     dependsOn cppBuild
     from(cppStaged)
-    into layout.buildDirectory.dir('release')
+    into layout.buildDirectory.dir("release/${mc}")
     // Exactly the one expected file, not a glob. CMake's staged directory is not cleaned between
     // builds, so after the target was renamed from remote-worker-relay to remote-worker both files
     // sat there and a glob copied the retired binary into the release as though it were current.
@@ -273,7 +273,7 @@ def stageCppBinaries = tasks.register('stageCppBinaries', Copy) {
     // this one) can survive a green build and be published. Copy adds and never removes, so the
     // removal has to be explicit here.
     doFirst {
-        def dir = layout.buildDirectory.dir('release').get().asFile
+        def dir = layout.buildDirectory.dir("release/${mc}").get().asFile
         if (dir.isDirectory()) {
             // Not a jar, and not the binary this build produced. The jar test is not redundant:
             // the mod's id is 'remote-worker' too, so a plain prefix test matches the mod's own
@@ -289,10 +289,10 @@ def stageCppBinaries = tasks.register('stageCppBinaries', Copy) {
 }
 
 // The binary is staged *after* releaseJars, not before. releaseJars is a Sync task, which means it
-// makes build/release match its inputs exactly -- so it deletes anything in that directory that is
+// makes build/release/<mc> match its inputs exactly -- so it deletes anything in that directory that is
 // not a jar. Staging the binary first therefore had it deleted again a moment later, and the release
 // quietly shipped no binary at all. Nothing failed: the build was green, the jar count was right, and
-// the omission only showed up by listing build/release.
+// the omission only showed up by listing build/release/<mc>.
 tasks.named('releaseJars') { finalizedBy stageCppBinaries }
 
 // Catches the one class of error a Windows build cannot see: a POSIX-only symbol used in a file

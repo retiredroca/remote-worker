@@ -254,7 +254,7 @@ tag) without re-bumping anything. This is how a failed run is retried without a 
 
 The staged build groups (`releaseLoaderJars`, `releaseLoaderBundles`, `releaseUniversal`,
 `releaseUniversalBundles`) each write their own directory; `releaseJars` unions them into
-`build/release/`, and the agent binary is staged *after* that, because `releaseJars` is a `Sync`
+`build/release/<mc>/`, and the agent binary is staged *after* that, because `releaseJars` is a `Sync`
 task and would delete it.
 
 See `PROJECT-GUIDE.md` for building and the build layout.

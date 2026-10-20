@@ -26,7 +26,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing release tag to rebuild, e.g. v1.0.0.26092811'
+        description: 'Existing release tag to rebuild, e.g. v1.0.0.26092811-1.21.1'
         required: true
         type: string
 
@@ -34,7 +34,6 @@ permissions:
   contents: write
 
 env:
-  MC_VERSION: '1.21.1'
   # The tag under build. On a push this is the ref name; on a re-run it is the input. Referenced as
   # ${{ env.RELEASE_TAG }} below.
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -116,6 +115,21 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
 
+      - name: Resolve Minecraft version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$RELEASE_TAG"
+          case "$tag" in
+            *-*) mc="${tag##*-}" ;;
+            *) echo "Tag $tag has no Minecraft suffix." >&2; exit 1 ;;
+          esac
+          case "$mc" in
+            *[!A-Za-z0-9._-]*) echo "Invalid Minecraft version from tag: $mc" >&2; exit 1 ;;
+          esac
+          echo "MC_VERSION=$mc" >> "$GITHUB_ENV"
+          echo "Minecraft $mc"
+
       - name: Resolve java version
         shell: bash
         run: |
@@ -154,15 +168,15 @@ jobs:
         run: |
           set -euo pipefail
           ./gradlew --no-daemon -Pmc=${MC_VERSION} -PskipCpp=true releaseUniversalBundles releaseJars
-          rm -rf dist
-          mkdir -p dist
-          cp build/release/*.jar dist/
-          ls -la dist
+          rm -rf "dist/${MC_VERSION}"
+          mkdir -p "dist/${MC_VERSION}"
+          cp "build/release/${MC_VERSION}"/*.jar "dist/${MC_VERSION}/"
+          ls -la "dist/${MC_VERSION}"
 
       - uses: actions/upload-artifact@v4
         with:
           name: release-jars
-          path: dist/*.jar
+          path: dist/${{ env.MC_VERSION }}/*.jar
           if-no-files-found: error
           retention-days: 1
 
@@ -176,9 +190,24 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
 
+      - name: Resolve Minecraft version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$RELEASE_TAG"
+          case "$tag" in
+            *-*) mc="${tag##*-}" ;;
+            *) echo "Tag $tag has no Minecraft suffix." >&2; exit 1 ;;
+          esac
+          case "$mc" in
+            *[!A-Za-z0-9._-]*) echo "Invalid Minecraft version from tag: $mc" >&2; exit 1 ;;
+          esac
+          echo "MC_VERSION=$mc" >> "$GITHUB_ENV"
+          echo "Minecraft $mc"
+
       - name: Prepare dist
         shell: bash
-        run: rm -rf dist && mkdir -p dist
+        run: rm -rf "dist/${MC_VERSION}" && mkdir -p "dist/${MC_VERSION}"
 
       # merge-multiple, or the jars land in dist/release-jars/ and the verify step below finds
       # zero of them in dist/. That is what the first green run of this workflow did: all three
@@ -186,7 +215,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: release-jars
-          path: dist
+          path: dist/${{ env.MC_VERSION }}
           merge-multiple: true
 
       # merge-multiple flattens the per-platform agent-* artifact directories into dist/. The
@@ -194,7 +223,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: agent-*
-          path: dist
+          path: dist/${{ env.MC_VERSION }}
           merge-multiple: true
 
       # The point of this step. A jar-count check cannot see a missing binary, and a release with
@@ -209,7 +238,7 @@ jobs:
           sys.path.insert(0, 'tools')
           import release
 
-          dist = pathlib.Path('dist')
+          dist = pathlib.Path('dist') / os.environ['MC_VERSION']
           version = release.read_props(release.VERSIONS)['remote-worker']
           expected_jars = release.expected_jars(release.os.environ.get('MC_VERSION', '1.21.1'))
 
@@ -243,7 +272,8 @@ jobs:
           # was verified, so deriving it here rather than re-globbing in the next step keeps the
           # platform names in one place: a new platform cannot be checked on one step and then
           # silently not uploaded on the other.
-          approved = ['dist/' + j.name for j in jars] + ['dist/' + n for n in sorted(matched)]
+          base = 'dist/' + os.environ['MC_VERSION'] + '/'
+          approved = [base + j.name for j in jars] + [base + n for n in sorted(matched)]
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
               out.write('files<<RWEOF' + chr(10) + chr(10).join(approved) + chr(10) + 'RWEOF' + chr(10))
           PY

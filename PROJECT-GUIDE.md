@@ -35,7 +35,7 @@ gradle/version-resolver.gradle            # resolves version overrides
 gradle/mirror-sources.gradle              # relocates common sources and prunes stale .class files
 tools/versioning.py                       # stamp / bump / tag / floor
 tools/release.py                          # local release driver
-dist/                                     # release artifacts + changelog (gitignored, .gitkeep tracked)
+dist/<mc>/                                # release artifacts + changelog (gitignored, .gitkeep tracked)
 ```
 
 The two loader builds are separate projects (Loom and NeoGradle cannot share one Gradle project).
@@ -71,14 +71,14 @@ count rather than growing the daemon heap).
 ### Build the release groups by hand
 
 The release build is four ordered groups, each writing its own directory; `releaseJars` unions them
-into `build/release/`:
+into `build/release/<mc>/`:
 
 ```bash
 ./gradlew -Pmc=<mc> releaseLoaderJars        # build/release-loader/          (per-loader jars)
 ./gradlew -Pmc=<mc> releaseLoaderBundles     # build/release-loader-bundles/  (per-loader bundles, multi)
 ./gradlew -Pmc=<mc> releaseUniversal         # build/release-universal/       (merged universal jars)
 ./gradlew -Pmc=<mc> releaseUniversalBundles  # build/release-universal-bundles/ (universal bundles, multi)
-./gradlew -Pmc=<mc> releaseJars              # union of all four -> build/release/
+./gradlew -Pmc=<mc> releaseJars              # union of all four -> build/release/<mc>/
 ```
 
 Groups 1 and 2 accept `-Ploader=fabric|neoforge` to build one loader only. `cleanLoader` and

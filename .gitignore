@@ -15,6 +15,9 @@ dist/changelog.md
 # are listed separately because a module with a different id would not carry this prefix.
 dist/remote-worker-*
 dist/*.jar
+dist/**/remote-worker-*
+dist/**/*.jar
+dist/**/changelog.md
 
 # Local working notes. Untracked deliberately: these are notes to self, full of machine-specific
 # facts and half-finished reasoning, and they are not something a reader of this repository should be
