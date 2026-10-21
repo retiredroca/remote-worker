@@ -28,8 +28,8 @@ v<major>.<minor>.<patch>.<yymmddhh>-<mc>   e.g. v1.0.2.26091512-1.21.1   (the ta
   was introduced has no predecessor, so every component is treated as changed;
 * two releases of the same Minecraft version in the same hour produce the same version/tag — space
   them out or pass `--tag`;
-* the platform version number is the mod version alone, so two Minecraft versions released in the
-  same hour still collide on CurseForge/Modrinth; space them out.
+* release jar names carry the Minecraft version after the loader. `versions.properties` and jar
+  metadata keep the plain version.
 
 Dependent modules ask for a library as a **floor range** `[<major.minor.patch>,<upper>)`, so an older
 library can never silently satisfy a newer dependent. `tools/release.py` rewrites that floor for you

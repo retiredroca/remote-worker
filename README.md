@@ -288,7 +288,7 @@ tools/check_posix_includes.py                  # catches a POSIX header a Window
 ```
 
 The two loader builds are separate (Loom and NeoGradle cannot share one Gradle project). The shared
-sources are compiled once per loader and merged into `<module>-<version>-universal.jar`, which works
+sources are compiled once per loader and merged into `<module>-<version>-universal-<mc>.jar`, which works
 on both loaders.
 
 ## Where to read more

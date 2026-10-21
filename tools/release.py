@@ -65,7 +65,7 @@ def die(msg):
 # `-sources` after its loader: that suffix exists only in the release, because both builds name their
 # sources jar <id>-<version>-sources.jar for a maven consumer, and flattening the two into one
 # directory would collide.
-ALLOWED_JAR = re.compile(r"^[A-Za-z0-9_-]+-[0-9][0-9.]*-(fabric|neoforge|universal)(-sources)?\.jar$")
+ALLOWED_JAR = re.compile(r"^[A-Za-z0-9_-]+-[0-9][0-9.]*-(fabric|neoforge|universal)(-sources)?-[0-9][0-9.]*\.jar$")
 
 # The endpoint agent: the one thing that runs on a watched machine. Its version is the same stamped
 # version as the mod, and the platform is named rather than implied, because a download page has to

@@ -158,8 +158,14 @@ if (moduleFile != null) {
 // The project abbreviation (abbrev in versions.properties) is prepended so jars from different
 // projects cannot collide when installed side by side. It is empty for a single-module project.
 def abbrev = (componentVersions.getProperty('abbrev') ?: '').trim()
+def jarMc = {
+    def mc = project.findProperty('targetMc') ?: project.findProperty('mc')
+    return mc == null ? '' : mc.toString()
+}
 ext.jarFileName = { String id, String version, String loader ->
-    "${abbrev ? abbrev + '-' : ''}${id}-${version}-${loader}.jar"
+    def mc = jarMc()
+    def mcPart = (loader == 'sources' || mc.isEmpty()) ? '' : "-${mc}"
+    "${abbrev ? abbrev + '-' : ''}${id}-${version}-${loader}${mcPart}.jar"
 }
 
 // A dependency's floor range: [<major.minor.patch>,<upper>). Unused in a single-mod project, but
